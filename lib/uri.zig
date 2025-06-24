@@ -75,19 +75,83 @@ fn splitEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 } {
 
 // TESTING
 
-const entries = [_]struct { raw: []const u8, uri: Uri }{
+const uri_entries = [_]struct { raw: []const u8, uri: Uri }{
     .{
-        .raw = "http://example.com/a/b/c?q1=a&q2=b#fragment",
+        .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
         .uri = Uri{
-            .scheme = "http",
-            .raw_query = "q1=a&q2=b",
-            .raw_fragment = "fragment",
+            .scheme = "https",
+            .raw_query = "tag=networking&order=newest",
+            .raw_fragment = "top",
+        },
+    },
+    .{
+        .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
+        .uri = Uri{
+            .scheme = "https",
+            .raw_query = "tag=networking&order=newest",
+            .raw_fragment = ":~:text=whatever",
+        },
+    },
+    .{
+        .raw = "ldap://[2001:db8::7]/c=GB?objectClass?one",
+        .uri = Uri{
+            .scheme = "ldap",
+            .raw_query = "objectClass?one",
+            .raw_fragment = null,
+        },
+    },
+    .{
+        .raw = "mailto:John.Doe@example.com",
+        .uri = Uri{
+            .scheme = "mailto",
+            .raw_query = null,
+            .raw_fragment = null,
+        },
+    },
+    .{
+        .raw = "news:comp.infosystems.www.servers.unix",
+        .uri = Uri{
+            .scheme = "news",
+            .raw_query = null,
+            .raw_fragment = null,
+        },
+    },
+    .{
+        .raw = "tel:+1-816-555-1212",
+        .uri = Uri{
+            .scheme = "tel",
+            .raw_query = null,
+            .raw_fragment = null,
+        },
+    },
+    .{
+        .raw = "telnet://192.0.2.16:80/",
+        .uri = Uri{
+            .scheme = "telnet",
+            .raw_query = null,
+            .raw_fragment = null,
+        },
+    },
+    .{
+        .raw = "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
+        .uri = Uri{
+            .scheme = "urn",
+            .raw_query = null,
+            .raw_fragment = null,
+        },
+    },
+    .{
+        .raw = "file:///etc/passwd",
+        .uri = Uri{
+            .scheme = "file",
+            .raw_query = null,
+            .raw_fragment = null,
         },
     },
 };
 
 test "URI parsing" {
-    for (entries) |entry| {
+    for (uri_entries) |entry| {
         const parsed = try Uri.parse(entry.raw);
 
         try std.testing.expectEqualStrings(entry.uri.scheme.?, parsed.scheme orelse "");
