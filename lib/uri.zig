@@ -4,6 +4,7 @@ const Uri = @This();
 // PUBLIC
 
 scheme: ?[]const u8 = null,
+raw_query: ?[]const u8 = null,
 raw_fragment: ?[]const u8 = null,
 
 pub const empty = Uri{};
@@ -33,6 +34,9 @@ fn parseInternal(s: []const u8, request: bool) InvalidUriError!Uri {
 
     uri.scheme, rest = try getScheme(rest, request);
     rest, uri.raw_fragment = splitEnd(rest, '#');
+
+    if (rest.len > 1 and rest[rest.len - 1] == '?') rest = rest[0 .. rest.len - 1];
+    rest, uri.raw_query = splitEnd(rest, '?');
 
     return uri;
 }
@@ -76,6 +80,7 @@ const entries = [_]struct { raw: []const u8, uri: Uri }{
         .raw = "http://example.com/a/b/c?q1=a&q2=b#fragment",
         .uri = Uri{
             .scheme = "http",
+            .raw_query = "q1=a&q2=b",
             .raw_fragment = "fragment",
         },
     },
@@ -85,7 +90,8 @@ test "URI parsing" {
     for (entries) |entry| {
         const parsed = try Uri.parse(entry.raw);
 
-        try std.testing.expectEqualSlices(u8, entry.uri.scheme.?, parsed.scheme orelse "");
-        try std.testing.expectEqualSlices(u8, entry.uri.raw_fragment orelse "", parsed.raw_fragment orelse "");
+        try std.testing.expectEqualStrings(entry.uri.scheme.?, parsed.scheme orelse "");
+        try std.testing.expectEqualStrings(entry.uri.raw_query orelse "", parsed.raw_query orelse "");
+        try std.testing.expectEqualStrings(entry.uri.raw_fragment orelse "", parsed.raw_fragment orelse "");
     }
 }
