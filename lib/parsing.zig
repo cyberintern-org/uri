@@ -1,12 +1,53 @@
 //! Parser implementation according to [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986).
 //!
+//! Basic syntax:
 //! URI-reference = URI | relative-ref
 //! URI = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
 //! relative-ref = relative-part [ "?" query ] [ "#" fragment ]
-//!
-//! scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
 //! hier-part = "//" authority path-abempty / path-absolute / path-rootless / path-empty
 //! relative-part = "//" authority path-abempty / path-absolute / path-noscheme / path-empty
+//!
+//! Syntax definitions:
+//! - scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+//! - authority = [ userinfo "@" ] host [ ":" port ]
+//!   - userinfo = *( unreserved / pct-encoded / sub-delims / ":" )
+//!   - host = IP-literal / IPv4address / reg-name
+//!     - IP-literal = "[" ( IPv6address / IPvFuture ) "]"
+//!       - IPvFuture = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
+//!       - IPv6address =                 6( h16 ":" ) ls32
+//!            /                     "::" 5( h16 ":" ) ls32
+//!            / [             h16 ] "::" 4( h16 ":" ) ls32
+//!            / [ *1(h16 ":") h16 ] "::" 3( h16 ":" ) ls32
+//!            / [ *2(h16 ":") h16 ] "::" 2( h16 ":" ) ls32
+//!            / [ *3(h16 ":") h16 ] "::"    h16 ":"   ls32
+//!            / [ *4(h16 ":") h16 ] "::"              ls32
+//!            / [ *5(h16 ":") h16 ] "::"              h16
+//!            / [ *6(h16 ":") h16 ] "::"
+//!         - ls32 = ( h16 ":" h16 ) / IPv4address
+//!         - h16 = 1*HEXDIG
+//!     - IPv4address = dec-octet "." dec-octet "." dec-octet "." dec-octet
+//!       - dec-octet = DIGIT / %x31-39 DIGIT / "1" 2DIGIT / "2" %x30-34 DIGIT / "25" %x30-35
+//!     - reg-name = *( unreserved / pct-encoded / sub-delims )
+//!   - port = *DIGIT
+//! - path = path-abempty / path-absolute / path-noscheme / path-rootless / path-empty
+//!   - path-abempty = *( "/" segment )
+//!   - path-absolute = "/" [ segment-nz *( "/" segment ) ]
+//!   - path-rootless = segment-nz *( "/" segment )
+//!   - path-noscheme = segment-nz-nc *( "/" segment )
+//!   - path-empty = 0pchar
+//!     - segment = *pchar
+//!     - segment-nz = 1*pchar
+//!     - segment-nz-nc = 1*( unreserved / pct-encoded / sub-delims / "@" )
+//!     - pchar = unreserved / pct-encoded / sub-delims / ":" / "@"
+//! - query = *( pchar / "/" / "?" )
+//! - fragment = *( pchar / "/" / "?" )
+//!
+//! Character definitions:
+//! pct-encoded = "%" HEXDIG HEXDIG
+//! unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
+//! reserved = gen-delims / sub-delims
+//! gen-delims = ":" / "/" / "?" / "#" / "[" / "]" / "@"
+//! sub-delims = "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
 
 const std = @import("std");
 const uri = @import("root.zig");
