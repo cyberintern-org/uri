@@ -8,6 +8,8 @@ pub const UriRef = union(enum) {
 
 pub const Uri = struct {
     scheme: []const u8 = "",
+    raw_query: ?[]const u8 = null,
+    raw_fragment: ?[]const u8 = null,
 };
 
 pub const RelativeRef = struct {};

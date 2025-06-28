@@ -22,17 +22,25 @@ pub fn parseAny(s: []const u8) InvalidUriError!uri.UriRef {
     if (s.len == 0) return InvalidUriError.EmptyUriError;
     if (std.mem.indexOfAny(u8, s, &.{ ' ', 0x7f })) |_| return InvalidUriError.InvalidCharacterError;
 
-    var out = uri.UriRef{ .uri = uri.Uri{} };
     var rest = s;
 
     const scheme, rest = try getScheme(rest);
-    if (scheme) |sch| {
-        out.uri.scheme = sch;
-    } else {
-        out = uri.UriRef{ .relative_ref = uri.RelativeRef{} };
-    }
+    rest, const fragment = splitEnd(rest, '#');
+    rest, const query = splitEnd(rest, '?');
 
-    return out;
+    if (scheme) |sch| {
+        return uri.UriRef{
+            .uri = uri.Uri{
+                .scheme = sch,
+                .raw_query = query,
+                .raw_fragment = fragment,
+            },
+        };
+    } else {
+        return uri.UriRef{
+            .relative_ref = uri.RelativeRef{},
+        };
+    }
 }
 
 // INTERNAL
@@ -63,18 +71,23 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.Uri }{
         .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
         .parsed = uri.Uri{
             .scheme = "https",
+            .raw_query = "tag=networking&order=newest",
+            .raw_fragment = "top",
         },
     },
     .{
         .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
         .parsed = uri.Uri{
             .scheme = "https",
+            .raw_query = "tag=networking&order=newest",
+            .raw_fragment = ":~:text=whatever",
         },
     },
     .{
         .raw = "ldap://[2001:db8::7]/c=GB?objectClass?one",
         .parsed = uri.Uri{
             .scheme = "ldap",
+            .raw_query = "objectClass?one",
         },
     },
     .{
