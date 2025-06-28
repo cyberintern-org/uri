@@ -1,3 +1,13 @@
+//! Parser implementation according to [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986).
+//!
+//! URI-reference = URI | relative-ref
+//! URI = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
+//! relative-ref = relative-part [ "?" query ] [ "#" fragment ]
+//!
+//! scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+//! hier-part = "//" authority path-abempty / path-absolute / path-rootless / path-empty
+//! relative-part = "//" authority path-abempty / path-absolute / path-noscheme / path-empty
+
 const std = @import("std");
 const uri = @import("root.zig");
 
@@ -7,45 +17,28 @@ pub const InvalidUriError = error{
     InvalidCharacterError,
     EmptyUriError,
     EmptySchemeError,
-    ExpectedUriError,
+    EmptyAuthorityError,
 };
 
-pub fn parseUri(s: []const u8) InvalidUriError!uri.Uri {
-    const parsed = try uri.parseAny(s);
-    return switch (parsed) {
-        .uri => |u| u,
-        .relative_ref => return InvalidUriError.ExpectedUriError,
-    };
-}
-
-pub fn parseAny(s: []const u8) InvalidUriError!uri.UriRef {
+/// Parses a URI or a relative reference from a string slice, returning an error if the string is not a valid URI reference.
+pub fn parse(s: []const u8) InvalidUriError!uri.UriRef {
     if (s.len == 0) return InvalidUriError.EmptyUriError;
     if (std.mem.indexOfAny(u8, s, &.{ ' ', 0x7f })) |_| return InvalidUriError.InvalidCharacterError;
 
+    var out = uri.UriRef{};
     var rest = s;
 
-    const scheme, rest = try getScheme(rest);
-    rest, const fragment = splitEnd(rest, '#');
-    rest, const query = splitEnd(rest, '?');
+    out.scheme, rest = try parseScheme(rest);
+    out.kind = if (out.scheme != null) uri.Kind.uri else uri.Kind.relative_ref;
+    rest, out.raw_fragment = splitEnd(rest, '#');
+    rest, out.raw_query = splitEnd(rest, '?');
 
-    if (scheme) |sch| {
-        return uri.UriRef{
-            .uri = uri.Uri{
-                .scheme = sch,
-                .raw_query = query,
-                .raw_fragment = fragment,
-            },
-        };
-    } else {
-        return uri.UriRef{
-            .relative_ref = uri.RelativeRef{},
-        };
-    }
+    return out;
 }
 
 // INTERNAL
 
-fn getScheme(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8 } {
+fn parseScheme(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8 } {
     l: for (s, 0..) |c, i| switch (c) {
         'A'...'Z', 'a'...'z' => {},
         '0'...'9', '+', '-', '.' => if (i == 0) break :l,
@@ -66,10 +59,10 @@ fn splitEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 } {
 
 // TESTS
 
-const uri_entries = [_]struct { raw: []const u8, parsed: uri.Uri }{
+const uri_entries = [_]struct { raw: []const u8, parsed: uri.UriRef }{
     .{
         .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "https",
             .raw_query = "tag=networking&order=newest",
             .raw_fragment = "top",
@@ -77,7 +70,7 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.Uri }{
     },
     .{
         .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "https",
             .raw_query = "tag=networking&order=newest",
             .raw_fragment = ":~:text=whatever",
@@ -85,44 +78,44 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.Uri }{
     },
     .{
         .raw = "ldap://[2001:db8::7]/c=GB?objectClass?one",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "ldap",
             .raw_query = "objectClass?one",
         },
     },
     .{
         .raw = "mailto:John.Doe@example.com",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "mailto",
         },
     },
     .{
         .raw = "news:comp.infosystems.www.servers.unix",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "news",
         },
     },
     .{
         .raw = "tel:+1-816-555-1212",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "tel",
         },
     },
     .{
         .raw = "telnet://192.0.2.16:80/",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "telnet",
         },
     },
     .{
         .raw = "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "urn",
         },
     },
     .{
         .raw = "file:///etc/passwd",
-        .parsed = uri.Uri{
+        .parsed = uri.UriRef{
             .scheme = "file",
         },
     },
@@ -130,8 +123,11 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.Uri }{
 
 test "URI parsing" {
     for (uri_entries) |entry| {
-        const parsed = try parseUri(entry.raw);
+        const parsed = try parse(entry.raw);
 
-        try std.testing.expectEqualStrings(entry.parsed.scheme, parsed.scheme);
+        try std.testing.expectEqual(uri.Kind.uri, parsed.kind);
+        try std.testing.expectEqualStrings(entry.parsed.scheme.?, parsed.scheme.?);
+        try std.testing.expectEqualStrings(entry.parsed.raw_query orelse "", parsed.raw_query orelse "");
+        try std.testing.expectEqualStrings(entry.parsed.raw_fragment orelse "", parsed.raw_fragment orelse "");
     }
 }
