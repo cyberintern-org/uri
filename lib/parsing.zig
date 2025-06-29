@@ -77,6 +77,8 @@ pub const InvalidUriError = error{
     EmptyUriError,
     EmptySchemeError,
     InvalidPathNoschemeError,
+    InvalidHostError,
+    InvalidPortError,
 };
 
 /// Parses a URI or a relative reference from a string slice, returning an error if the string is not a valid URI reference.
@@ -89,8 +91,8 @@ pub fn parse(s: []const u8) InvalidUriError!uri.UriRef {
 
     out.scheme, rest = try parseScheme(rest);
     out.kind = if (out.scheme != null) uri.Kind.uri else uri.Kind.relative_ref;
-    rest, out.raw_fragment = splitEnd(rest, '#');
-    rest, out.raw_query = splitEnd(rest, '?');
+    rest, out.raw_fragment = splitFirstEnd(rest, '#');
+    rest, out.raw_query = splitFirstEnd(rest, '?');
 
     // path-absolute, path-rootless, path-empty don't require additional handling
     if (rest.len != 0 and rest[0] != '/' and out.kind == uri.Kind.relative_ref) { // path-noscheme
@@ -106,6 +108,8 @@ pub fn parse(s: []const u8) InvalidUriError!uri.UriRef {
             rest = authority[sl..];
             authority = authority[0..sl];
         }
+
+        out.userinfo, out.host, out.host_type, out.port = try parseAuthority(authority);
     }
 
     out.path = rest;
@@ -113,6 +117,10 @@ pub fn parse(s: []const u8) InvalidUriError!uri.UriRef {
 }
 
 // INTERNAL
+
+const gen_delims = [_]u8{ ':', '/', '?', '#', '[', ']', '@' };
+const sub_delims = [_]u8{ '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=' };
+const unreserved_no_alphanumeric = [_]u8{ '-', '.', '_', '~' };
 
 fn parseScheme(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8 } {
     l: for (s, 0..) |c, i| switch (c) {
@@ -125,91 +133,243 @@ fn parseScheme(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8 }
     return .{ null, s };
 }
 
-fn splitEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 } {
+fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8, ?uri.HostType, ?u16 } {
+    const userinfo, var host = splitFirstStart(s, '@');
+    var host_type: ?uri.HostType = null;
+    var port_string: ?[]const u8 = null;
+
+    if (std.mem.startsWith(u8, host, "[")) { // IP-literal
+        const temp = host[1..];
+        host, port_string = splitLastEnd(host[1..], ']');
+        if (port_string) |p| {
+            if (p[0] == ':') port_string = p[1..] else return InvalidUriError.InvalidHostError; // no colon
+        }
+
+        if (host.len == 0 or host.len == temp.len) return InvalidUriError.InvalidHostError; // empty or no closing bracket
+        if (try parseIPvFuture(host)) {
+            host_type = uri.HostType.ipvfuture;
+        } else if (try parseIPv6(host)) {
+            host_type = uri.HostType.ipv6;
+        } else {
+            return InvalidUriError.InvalidHostError;
+        }
+    } else { // IPv4address or reg-name
+        host, port_string = splitLastEnd(host, ':');
+        if (try parseIPv4(host)) {
+            host_type = uri.HostType.ipv4;
+        } else {
+            try parseRegName(host);
+            host_type = uri.HostType.domain;
+        }
+    }
+
+    if (port_string) |p| {
+        const port = std.fmt.parseInt(u16, p, 10) catch return InvalidUriError.InvalidPortError;
+        return .{ userinfo, host, host_type, port };
+    }
+
+    return .{ userinfo, host, host_type, null };
+}
+
+fn parseIPvFuture(s: []const u8) InvalidUriError!bool {
+    var found_dot = false;
+    var found_second = false;
+    l: for (s, 0..) |c, i| switch (i) {
+        0 => if (c != 'v') return false,
+        1 => switch (c) {
+            '.' => found_dot = true,
+            '0'...'9', 'a'...'f', 'A'...'F' => {},
+            else => return InvalidUriError.InvalidHostError,
+        },
+        2, 3 => {
+            if (!found_dot and c != '.') return InvalidUriError.InvalidHostError;
+            if (c == '.') {
+                found_dot = true;
+                continue :l;
+            }
+
+            if (i == 3 and found_second) return InvalidUriError.InvalidHostError; // can have at most 1 character after the dot
+
+            if (std.ascii.isAlphanumeric(c) or std.mem.indexOfScalar(u8, &unreserved_no_alphanumeric, c) != null) {
+                found_second = true;
+                continue :l;
+            }
+            if (std.mem.indexOfScalar(u8, &sub_delims, c)) |_| {
+                found_second = true;
+                continue :l;
+            }
+            if (c == ':') {
+                found_second = true;
+                continue :l;
+            }
+
+            return InvalidUriError.InvalidHostError; // invalid character
+        },
+        else => return InvalidUriError.InvalidHostError, // more than 1 character after the dot
+    };
+
+    if (!found_dot) return InvalidUriError.InvalidHostError; // must have at least one dot
+    return true;
+}
+
+fn parseIPv6(s: []const u8) InvalidUriError!bool {
+    _ = s;
+    return true; // TODO: Implement IPv6 parsing
+}
+
+fn parseIPv4(s: []const u8) InvalidUriError!bool {
+    var parts = std.mem.splitScalar(u8, s, '.');
+    var len: usize = 0;
+
+    while (parts.next()) |part| : (len += 1) switch (part.len) {
+        0 => return false, // empty part
+        1 => if (!std.ascii.isDigit(part[0])) return false, // 0-9
+        2 => { // 10-99
+            if (part[0] < '1' or part[0] > '9') return false;
+            if (!std.ascii.isDigit(part[1])) return false;
+        },
+        3 => switch (part[0]) {
+            '1' => if (!std.ascii.isDigit(part[1]) or !std.ascii.isDigit(part[2])) return false, // 100-199
+            '2' => switch (part[1]) {
+                '0'...'4' => if (!std.ascii.isDigit(part[2])) return false, // 200-249
+                '5' => if (part[2] < '0' or part[2] > '5') return false, // 250-255
+                else => return false, // invalid second digit
+            },
+            else => return false,
+        },
+        else => return false, // too long part
+    };
+
+    return len == 4;
+}
+
+fn parseRegName(s: []const u8) InvalidUriError!void {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (std.ascii.isAlphanumeric(c) or std.mem.indexOfScalar(u8, &unreserved_no_alphanumeric, c) != null) continue;
+        if (std.mem.indexOfScalar(u8, &sub_delims, c)) |_| continue;
+        if (c == '%') {
+            if (i + 2 >= s.len) return InvalidUriError.InvalidHostError; // not enough characters for pct-encoded
+            if (!std.ascii.isHex(s[i + 1]) or !std.ascii.isHex(s[i + 2])) {
+                return InvalidUriError.InvalidHostError; // invalid pct-encoded character
+            }
+            i += 1; // skip the next two characters
+            continue;
+        }
+
+        return InvalidUriError.InvalidHostError; // invalid character
+
+    }
+}
+
+fn splitFirstStart(s: []const u8, delimiter: u8) struct { ?[]const u8, []const u8 } {
+    const i = std.mem.indexOfScalar(u8, s, delimiter);
+
+    if (i == null) return .{ null, s };
+    if (i.? == 0) return .{ "", s[1..] };
+    if (i.? == s.len - 1) return .{ s[0..i.?], "" };
+    return .{ s[0..i.?], s[i.? + 1 ..] };
+}
+
+fn splitFirstEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 } {
     var iter = std.mem.splitScalar(u8, s, delimiter);
-
     const first, const rest = .{ iter.first(), iter.rest() };
-
     return if (rest.len == 0) .{ first, null } else .{ first, rest };
+}
+
+fn splitLastEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 } {
+    const idx = std.mem.lastIndexOfScalar(u8, s, delimiter);
+
+    if (idx == null) return .{ s, null };
+    if (idx.? == 0) return .{ "", s[1..] };
+    if (idx.? == s.len - 1) return .{ s[0..idx.?], null };
+    return .{ s[0..idx.?], s[idx.? + 1 ..] };
 }
 
 // TESTS
 
-const uri_entries = [_]struct { raw: []const u8, parsed: uri.UriRef }{
+const uri_entries = [_]struct { in: []const u8, out: uri.UriRef }{
     .{
-        .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
+        .out = uri.UriRef{
             .scheme = "https",
+            .userinfo = "john.doe",
+            .host = "www.example.com",
+            .host_type = .domain,
+            .port = 1234,
             .path = "/forum/questions/",
             .raw_query = "tag=networking&order=newest",
             .raw_fragment = "top",
         },
     },
     .{
-        .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
+        .out = uri.UriRef{
             .scheme = "https",
+            .userinfo = "john.doe",
+            .host = "www.example.com",
+            .host_type = .domain,
+            .port = 1234,
             .path = "/forum/questions/",
             .raw_query = "tag=networking&order=newest",
             .raw_fragment = ":~:text=whatever",
         },
     },
     .{
-        .raw = "ldap://[2001:db8::7]/c=GB?objectClass?one",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "ldap://[2001:db8::7]/c=GB?objectClass?one",
+        .out = uri.UriRef{
             .scheme = "ldap",
+            .host = "2001:db8::7",
+            .host_type = .ipv6,
             .path = "/c=GB",
             .raw_query = "objectClass?one",
         },
     },
     .{
-        .raw = "mailto:John.Doe@example.com",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "mailto:John.Doe@example.com",
+        .out = uri.UriRef{
             .scheme = "mailto",
             .path = "John.Doe@example.com",
         },
     },
     .{
-        .raw = "news:comp.infosystems.www.servers.unix",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "news:comp.infosystems.www.servers.unix",
+        .out = uri.UriRef{
             .scheme = "news",
             .path = "comp.infosystems.www.servers.unix",
         },
     },
     .{
-        .raw = "tel:+1-816-555-1212",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "tel:+1-816-555-1212",
+        .out = uri.UriRef{
             .scheme = "tel",
             .path = "+1-816-555-1212",
         },
     },
     .{
-        .raw = "telnet://192.0.2.16:80/",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "telnet://192.0.2.16:80/",
+        .out = uri.UriRef{
             .scheme = "telnet",
+            .host = "192.0.2.16",
+            .host_type = .ipv4,
+            .port = 80,
             .path = "/",
         },
     },
     .{
-        .raw = "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
+        .out = uri.UriRef{
             .scheme = "urn",
             .path = "oasis:names:specification:docbook:dtd:xml:4.1.2",
         },
     },
     .{
-        .raw = "file:///etc/passwd",
-        .parsed = uri.UriRef{
-            .kind = uri.Kind.uri,
+        .in = "file:///etc/passwd",
+        .out = uri.UriRef{
             .scheme = "file",
+            .host = "",
+            .host_type = .domain,
             .path = "/etc/passwd",
         },
     },
@@ -220,13 +380,30 @@ comptime {
     for (uri_entries) |entry| {
         _ = struct {
             test {
-                const parsed = try parse(entry.raw);
+                const parsed = try parse(entry.in);
 
                 try std.testing.expectEqual(uri.Kind.uri, parsed.kind);
-                try std.testing.expectEqualStrings(entry.parsed.scheme.?, parsed.scheme.?);
-                try std.testing.expectEqualStrings(entry.parsed.path, parsed.path);
-                try std.testing.expectEqualStrings(entry.parsed.raw_query orelse "", parsed.raw_query orelse "");
-                try std.testing.expectEqualStrings(entry.parsed.raw_fragment orelse "", parsed.raw_fragment orelse "");
+                try std.testing.expectEqualStrings(entry.out.scheme.?, parsed.scheme.?);
+                try std.testing.expectEqualStrings(entry.out.userinfo orelse "", parsed.userinfo orelse "");
+
+                if (entry.out.host) |host| {
+                    try std.testing.expect(parsed.host != null);
+                    try std.testing.expectEqualStrings(host, parsed.host.?);
+                } else {
+                    try std.testing.expectEqual(null, parsed.host);
+                }
+
+                if (entry.out.host_type) |host_type| {
+                    try std.testing.expect(parsed.host_type != null);
+                    try std.testing.expectEqual(host_type, parsed.host_type.?);
+                } else {
+                    try std.testing.expectEqual(null, parsed.host_type);
+                }
+
+                try std.testing.expectEqual(entry.out.port, parsed.port);
+                try std.testing.expectEqualStrings(entry.out.path, parsed.path);
+                try std.testing.expectEqualStrings(entry.out.raw_query orelse "", parsed.raw_query orelse "");
+                try std.testing.expectEqualStrings(entry.out.raw_fragment orelse "", parsed.raw_fragment orelse "");
             }
         };
     }

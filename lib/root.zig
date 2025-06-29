@@ -25,9 +25,19 @@ pub const Kind = enum {
     uri,
     relative_ref,
 };
+pub const HostType = enum {
+    domain,
+    ipv4,
+    ipv6,
+    ipvfuture,
+};
 
 pub const UriRef = struct {
     scheme: ?[]const u8 = null,
+    userinfo: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    host_type: ?HostType = null,
+    port: ?u16 = null,
     path: []const u8 = "",
     raw_query: ?[]const u8 = null,
     raw_fragment: ?[]const u8 = null,
