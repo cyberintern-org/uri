@@ -180,13 +180,18 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.UriRef }{
     },
 };
 
-test "URI parsing" {
+comptime {
+    // URI parsing
     for (uri_entries) |entry| {
-        const parsed = try parse(entry.raw);
+        _ = struct {
+            test {
+                const parsed = try parse(entry.raw);
 
-        try std.testing.expectEqual(uri.Kind.uri, parsed.kind);
-        try std.testing.expectEqualStrings(entry.parsed.scheme.?, parsed.scheme.?);
-        try std.testing.expectEqualStrings(entry.parsed.raw_query orelse "", parsed.raw_query orelse "");
-        try std.testing.expectEqualStrings(entry.parsed.raw_fragment orelse "", parsed.raw_fragment orelse "");
+                try std.testing.expectEqual(uri.Kind.uri, parsed.kind);
+                try std.testing.expectEqualStrings(entry.parsed.scheme.?, parsed.scheme.?);
+                try std.testing.expectEqualStrings(entry.parsed.raw_query orelse "", parsed.raw_query orelse "");
+                try std.testing.expectEqualStrings(entry.parsed.raw_fragment orelse "", parsed.raw_fragment orelse "");
+            }
+        };
     }
 }
