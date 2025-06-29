@@ -76,7 +76,7 @@ pub const InvalidUriError = error{
     InvalidCharacterError,
     EmptyUriError,
     EmptySchemeError,
-    EmptyAuthorityError,
+    InvalidPathNoschemeError,
 };
 
 /// Parses a URI or a relative reference from a string slice, returning an error if the string is not a valid URI reference.
@@ -92,6 +92,23 @@ pub fn parse(s: []const u8) InvalidUriError!uri.UriRef {
     rest, out.raw_fragment = splitEnd(rest, '#');
     rest, out.raw_query = splitEnd(rest, '?');
 
+    // path-absolute, path-rootless, path-empty don't require additional handling
+    if (rest.len != 0 and rest[0] != '/' and out.kind == uri.Kind.relative_ref) { // path-noscheme
+        var p = std.mem.splitScalar(u8, rest, '/');
+        if (std.mem.indexOfScalar(u8, p.first(), ':')) |_| {
+            return InvalidUriError.InvalidPathNoschemeError;
+        }
+    } else if (std.mem.startsWith(u8, rest, "//")) { // authority path-abempty
+        var authority = rest[2..];
+        rest = "";
+
+        if (std.mem.indexOfScalar(u8, authority, '/')) |sl| {
+            rest = authority[sl..];
+            authority = authority[0..sl];
+        }
+    }
+
+    out.path = rest;
     return out;
 }
 
@@ -122,7 +139,9 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.UriRef }{
     .{
         .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "https",
+            .path = "/forum/questions/",
             .raw_query = "tag=networking&order=newest",
             .raw_fragment = "top",
         },
@@ -130,7 +149,9 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.UriRef }{
     .{
         .raw = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "https",
+            .path = "/forum/questions/",
             .raw_query = "tag=networking&order=newest",
             .raw_fragment = ":~:text=whatever",
         },
@@ -138,44 +159,58 @@ const uri_entries = [_]struct { raw: []const u8, parsed: uri.UriRef }{
     .{
         .raw = "ldap://[2001:db8::7]/c=GB?objectClass?one",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "ldap",
+            .path = "/c=GB",
             .raw_query = "objectClass?one",
         },
     },
     .{
         .raw = "mailto:John.Doe@example.com",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "mailto",
+            .path = "John.Doe@example.com",
         },
     },
     .{
         .raw = "news:comp.infosystems.www.servers.unix",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "news",
+            .path = "comp.infosystems.www.servers.unix",
         },
     },
     .{
         .raw = "tel:+1-816-555-1212",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "tel",
+            .path = "+1-816-555-1212",
         },
     },
     .{
         .raw = "telnet://192.0.2.16:80/",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "telnet",
+            .path = "/",
         },
     },
     .{
         .raw = "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "urn",
+            .path = "oasis:names:specification:docbook:dtd:xml:4.1.2",
         },
     },
     .{
         .raw = "file:///etc/passwd",
         .parsed = uri.UriRef{
+            .kind = uri.Kind.uri,
             .scheme = "file",
+            .path = "/etc/passwd",
         },
     },
 };
@@ -189,6 +224,7 @@ comptime {
 
                 try std.testing.expectEqual(uri.Kind.uri, parsed.kind);
                 try std.testing.expectEqualStrings(entry.parsed.scheme.?, parsed.scheme.?);
+                try std.testing.expectEqualStrings(entry.parsed.path, parsed.path);
                 try std.testing.expectEqualStrings(entry.parsed.raw_query orelse "", parsed.raw_query orelse "");
                 try std.testing.expectEqualStrings(entry.parsed.raw_fragment orelse "", parsed.raw_fragment orelse "");
             }
