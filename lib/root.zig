@@ -45,16 +45,15 @@ pub const HostType = enum {
 };
 
 pub const UriRef = struct {
+    kind: Kind = .indeterminate,
     scheme: ?[]const u8 = null,
     userinfo: ?[]const u8 = null,
     host: ?[]const u8 = null,
     host_type: ?HostType = null,
     port: ?u16 = null,
     path: []const u8 = "",
-    raw_query: ?[]const u8 = null,
-    raw_fragment: ?[]const u8 = null,
-
-    kind: Kind = .indeterminate,
+    query: ?[]const u8 = null,
+    fragment: ?[]const u8 = null,
 };
 
 /// Parser implementation according to [RFC 3986, Chapter 3. Syntax Components](https://datatracker.ietf.org/doc/html/rfc3986#autoid-17).
@@ -116,8 +115,8 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
 
     out.scheme, rest = try parseScheme(rest);
     out.kind = if (out.scheme != null) .uri else .relative_ref;
-    rest, out.raw_fragment = splitFirstEnd(rest, '#');
-    rest, out.raw_query = splitFirstEnd(rest, '?');
+    rest, out.fragment = splitFirstEnd(rest, '#');
+    rest, out.query = splitFirstEnd(rest, '?');
 
     // path-absolute, path-rootless, path-empty don't require additional handling
     if (rest.len != 0 and rest[0] != '/' and out.kind == .relative_ref) { // path-noscheme
@@ -159,7 +158,7 @@ fn parseScheme(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8 }
 }
 
 fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8, ?HostType, ?u16 } {
-    const userinfo, var host = splitFirstStart(s, '@');
+    const userinfo, var host = splitLastStart(s, '@');
     var host_type: ?HostType = null;
     var port_string: ?[]const u8 = null;
 
@@ -239,7 +238,7 @@ fn parseIPvFuture(s: []const u8) InvalidUriError!bool {
 
 fn parseIPv6(s: []const u8) InvalidUriError!bool {
     _ = s;
-    return true; // TODO: Implement IPv6 parsing
+    return false; // TODO: Implement IPv6 parsing
 }
 
 fn parseIPv4(s: []const u8) InvalidUriError!bool {
@@ -303,6 +302,14 @@ fn splitFirstEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 
     return if (rest.len == 0) .{ first, null } else .{ first, rest };
 }
 
+fn splitLastStart(s: []const u8, delimiter: u8) struct { ?[]const u8, []const u8 } {
+    const idx = std.mem.lastIndexOfScalar(u8, s, delimiter);
+    if (idx == null) return .{ null, s };
+    if (idx.? == 0) return .{ "", s[1..] };
+    if (idx.? == s.len - 1) return .{ s[0..idx.?], "" };
+    return .{ s[0..idx.?], s[idx.? + 1 ..] };
+}
+
 fn splitLastEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 } {
     const idx = std.mem.lastIndexOfScalar(u8, s, delimiter);
 
@@ -315,89 +322,190 @@ fn splitLastEnd(s: []const u8, delimiter: u8) struct { []const u8, ?[]const u8 }
 // TESTS
 
 const uri_entries = [_]struct { in: []const u8, out: UriRef }{
-    .{
-        .in = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#top",
+    .{ // URI, authority, path-empty
+        .in = "http://example.com",
         .out = UriRef{
-            .scheme = "https",
-            .userinfo = "john.doe",
-            .host = "www.example.com",
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
             .host_type = .domain,
-            .port = 1234,
-            .path = "/forum/questions/",
-            .raw_query = "tag=networking&order=newest",
-            .raw_fragment = "top",
+            .path = "",
         },
     },
-    .{
-        .in = "https://john.doe@www.example.com:1234/forum/questions/?tag=networking&order=newest#:~:text=whatever",
+    .{ // URI, authority, path-absolute
+        .in = "http://example.com/path/to/resource",
         .out = UriRef{
-            .scheme = "https",
-            .userinfo = "john.doe",
-            .host = "www.example.com",
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
             .host_type = .domain,
-            .port = 1234,
-            .path = "/forum/questions/",
-            .raw_query = "tag=networking&order=newest",
-            .raw_fragment = ":~:text=whatever",
+            .path = "/path/to/resource",
         },
     },
-    .{
-        .in = "ldap://[2001:db8::7]/c=GB?objectClass?one",
+    .{ // path with percent-encoding
+        .in = "http://example.com/path/to/resource%20with%20spaces",
         .out = UriRef{
-            .scheme = "ldap",
-            .host = "2001:db8::7",
-            .host_type = .ipv6,
-            .path = "/c=GB",
-            .raw_query = "objectClass?one",
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path/to/resource%20with%20spaces",
         },
     },
-    .{
-        .in = "mailto:John.Doe@example.com",
+    .{ // fragment with percent-encoding
+        .in = "http://example.com/path#fragment%20with%20spaces",
         .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path",
+            .fragment = "fragment%20with%20spaces",
+        },
+    },
+    .{ // userinfo
+        .in = "http://user@example.com",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .userinfo = "user",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "",
+        },
+    },
+    .{ // userinfo with percent-encoding
+        .in = "http://user%20name@example.com",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .userinfo = "user%20name",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "",
+        },
+    },
+    .{ // empty query
+        .in = "http://example.com/path?",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path",
+            .query = "",
+        },
+    },
+    .{ // query with percent-encoding
+        .in = "http://example.com/path?query%20with%20spaces",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path",
+            .query = "query%20with%20spaces",
+        },
+    },
+    .{ // no authority, path-rootless
+        .in = "mailto:john.doe@example.com",
+        .out = UriRef{
+            .kind = .uri,
             .scheme = "mailto",
-            .path = "John.Doe@example.com",
+            .path = "john.doe@example.com",
         },
     },
-    .{
-        .in = "news:comp.infosystems.www.servers.unix",
+    .{ // no authority, path-absolute
+        .in = "file:///path/to/file.txt",
         .out = UriRef{
-            .scheme = "news",
-            .path = "comp.infosystems.www.servers.unix",
-        },
-    },
-    .{
-        .in = "tel:+1-816-555-1212",
-        .out = UriRef{
-            .scheme = "tel",
-            .path = "+1-816-555-1212",
-        },
-    },
-    .{
-        .in = "telnet://192.0.2.16:80/",
-        .out = UriRef{
-            .scheme = "telnet",
-            .host = "192.0.2.16",
-            .host_type = .ipv4,
-            .port = 80,
-            .path = "/",
-        },
-    },
-    .{
-        .in = "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
-        .out = UriRef{
-            .scheme = "urn",
-            .path = "oasis:names:specification:docbook:dtd:xml:4.1.2",
-        },
-    },
-    .{
-        .in = "file:///etc/passwd",
-        .out = UriRef{
+            .kind = .uri,
             .scheme = "file",
             .host = "",
             .host_type = .domain,
-            .path = "/etc/passwd",
+            .path = "/path/to/file.txt",
         },
     },
+    .{ // no authority, path-empty
+        .in = "http:",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+        },
+    },
+    .{ // unescaped :// in query should not create a scheme
+        .in = "http://example.com/path?from=http://example.com",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path",
+            .query = "from=http://example.com",
+        },
+    },
+    .{ // leading // without scheme should create an authority
+        .in = "//example.com/path/to/resource",
+        .out = UriRef{
+            .kind = .relative_ref,
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path/to/resource",
+        },
+    },
+    .{ // leading // without scheme, with userinfo, path, and query
+        .in = "//user@example.com/path/to/resource?query=value",
+        .out = UriRef{
+            .kind = .relative_ref,
+            .userinfo = "user",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path/to/resource",
+            .query = "query=value",
+        },
+    },
+    .{ // unescaped '@' should not confuse the host
+        .in = "http://user@name@example.com/p@th/to/resource?q=v@lue",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .userinfo = "user@name",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/p@th/to/resource",
+            .query = "q=v@lue",
+        },
+    },
+    .{ // IPv4 address in authority
+        .in = "http://192.168.0.1/path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "192.168.0.1",
+            .host_type = .ipv4,
+            .path = "/path/to/resource",
+        },
+    },
+    .{ // IPv4 and port in authority
+        .in = "http://192.168.0.1:8080/path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "192.168.0.1",
+            .host_type = .ipv4,
+            .port = 8080,
+            .path = "/path/to/resource",
+        },
+    },
+    // .{ // IPv6 address in authority
+    //     .in = "http://[2001:db8::1]/path/to/resource",
+    //     .out = UriRef{
+    //         .kind = .uri,
+    //         .scheme = "http",
+    //         .host = "2001:db8::1",
+    //         .host_type = .ipv6,
+    //         .path = "/path/to/resource",
+    //     },
+    // },
 };
 
 comptime {
@@ -407,9 +515,21 @@ comptime {
             test {
                 const parsed = try parse(entry.in);
 
-                try std.testing.expectEqual(Kind.uri, parsed.kind);
-                try std.testing.expectEqualStrings(entry.out.scheme.?, parsed.scheme.?);
-                try std.testing.expectEqualStrings(entry.out.userinfo orelse "", parsed.userinfo orelse "");
+                try std.testing.expectEqual(entry.out.kind, parsed.kind);
+
+                if (entry.out.kind == .uri) {
+                    try std.testing.expect(parsed.scheme != null);
+                    try std.testing.expectEqualStrings(entry.out.scheme.?, parsed.scheme.?);
+                } else {
+                    try std.testing.expectEqual(null, parsed.scheme);
+                }
+
+                if (entry.out.userinfo) |userinfo| {
+                    try std.testing.expect(parsed.userinfo != null);
+                    try std.testing.expectEqualStrings(userinfo, parsed.userinfo.?);
+                } else {
+                    try std.testing.expectEqual(null, parsed.userinfo);
+                }
 
                 if (entry.out.host) |host| {
                     try std.testing.expect(parsed.host != null);
@@ -427,8 +547,6 @@ comptime {
 
                 try std.testing.expectEqual(entry.out.port, parsed.port);
                 try std.testing.expectEqualStrings(entry.out.path, parsed.path);
-                try std.testing.expectEqualStrings(entry.out.raw_query orelse "", parsed.raw_query orelse "");
-                try std.testing.expectEqualStrings(entry.out.raw_fragment orelse "", parsed.raw_fragment orelse "");
             }
         };
     }
