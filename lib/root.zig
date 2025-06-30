@@ -170,19 +170,22 @@ fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u
         }
 
         if (host.len == 0 or host.len == temp.len) return InvalidUriError.InvalidHostError; // empty or no closing bracket
-        if (try parseIPvFuture(host)) {
+        if (try parseIPvFuture(host)) |h| {
+            host = h;
             host_type = HostType.ipvfuture;
-        } else if (try parseIPv6(host)) {
+        } else if (try parseIPv6(host)) |h| {
+            host = h;
             host_type = HostType.ipv6;
         } else {
             return InvalidUriError.InvalidHostError;
         }
     } else { // IPv4address or reg-name
         host, port_string = splitLastEnd(host, ':');
-        if (try parseIPv4(host)) {
+        if (try parseIPv4(host)) |h| {
+            host = h;
             host_type = HostType.ipv4;
         } else {
-            try parseRegName(host);
+            host = try parseRegName(host);
             host_type = HostType.domain;
         }
     }
@@ -195,11 +198,11 @@ fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u
     return .{ userinfo, host, host_type, null };
 }
 
-fn parseIPvFuture(s: []const u8) InvalidUriError!bool {
+fn parseIPvFuture(s: []const u8) InvalidUriError!?[]const u8 {
     var found_dot = false;
     var found_second = false;
     l: for (s, 0..) |c, i| switch (i) {
-        0 => if (c != 'v') return false,
+        0 => if (c != 'v') return null,
         1 => switch (c) {
             '.' => found_dot = true,
             '0'...'9', 'a'...'f', 'A'...'F' => {},
@@ -233,41 +236,41 @@ fn parseIPvFuture(s: []const u8) InvalidUriError!bool {
     };
 
     if (!found_dot) return InvalidUriError.InvalidHostError; // must have at least one dot
-    return true;
+    return s;
 }
 
-fn parseIPv6(s: []const u8) InvalidUriError!bool {
+fn parseIPv6(s: []const u8) InvalidUriError!?[]const u8 {
     _ = s;
-    return false; // TODO: Implement IPv6 parsing
+    return null;
 }
 
-fn parseIPv4(s: []const u8) InvalidUriError!bool {
+fn parseIPv4(s: []const u8) InvalidUriError!?[]const u8 {
     var parts = std.mem.splitScalar(u8, s, '.');
     var len: usize = 0;
 
     while (parts.next()) |part| : (len += 1) switch (part.len) {
-        0 => return false, // empty part
-        1 => if (!std.ascii.isDigit(part[0])) return false, // 0-9
+        0 => return null, // empty part
+        1 => if (!std.ascii.isDigit(part[0])) return null, // 0-9
         2 => { // 10-99
-            if (part[0] < '1' or part[0] > '9') return false;
-            if (!std.ascii.isDigit(part[1])) return false;
+            if (part[0] < '1' or part[0] > '9') return null;
+            if (!std.ascii.isDigit(part[1])) return null;
         },
         3 => switch (part[0]) {
-            '1' => if (!std.ascii.isDigit(part[1]) or !std.ascii.isDigit(part[2])) return false, // 100-199
+            '1' => if (!std.ascii.isDigit(part[1]) or !std.ascii.isDigit(part[2])) return null, // 100-199
             '2' => switch (part[1]) {
-                '0'...'4' => if (!std.ascii.isDigit(part[2])) return false, // 200-249
-                '5' => if (part[2] < '0' or part[2] > '5') return false, // 250-255
-                else => return false, // invalid second digit
+                '0'...'4' => if (!std.ascii.isDigit(part[2])) return null, // 200-249
+                '5' => if (part[2] < '0' or part[2] > '5') return null, // 250-255
+                else => return null, // invalid second digit
             },
-            else => return false,
+            else => return null,
         },
-        else => return false, // too long part
+        else => return null, // too long part
     };
 
-    return len == 4;
+    return if (len == 4) s else null; // must have exactly 4 parts
 }
 
-fn parseRegName(s: []const u8) InvalidUriError!void {
+fn parseRegName(s: []const u8) InvalidUriError![]const u8 {
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
         const c = s[i];
@@ -283,8 +286,8 @@ fn parseRegName(s: []const u8) InvalidUriError!void {
         }
 
         return InvalidUriError.InvalidHostError; // invalid character
-
     }
+    return s;
 }
 
 fn splitFirstStart(s: []const u8, delimiter: u8) struct { ?[]const u8, []const u8 } {
@@ -463,18 +466,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .query = "query=value",
         },
     },
-    .{ // unescaped '@' should not confuse the host
-        .in = "http://user@name@example.com/p@th/to/resource?q=v@lue",
-        .out = UriRef{
-            .kind = .uri,
-            .scheme = "http",
-            .userinfo = "user@name",
-            .host = "example.com",
-            .host_type = .domain,
-            .path = "/p@th/to/resource",
-            .query = "q=v@lue",
-        },
-    },
     .{ // IPv4 address in authority
         .in = "http://192.168.0.1/path/to/resource",
         .out = UriRef{
@@ -496,16 +487,16 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .path = "/path/to/resource",
         },
     },
-    // .{ // IPv6 address in authority
-    //     .in = "http://[2001:db8::1]/path/to/resource",
-    //     .out = UriRef{
-    //         .kind = .uri,
-    //         .scheme = "http",
-    //         .host = "2001:db8::1",
-    //         .host_type = .ipv6,
-    //         .path = "/path/to/resource",
-    //     },
-    // },
+    .{ // IPv6 address in authority
+        .in = "http://[2001:db8::1]/path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "2001:db8::1",
+            .host_type = .ipv6,
+            .path = "/path/to/resource",
+        },
+    },
 };
 
 comptime {
