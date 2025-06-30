@@ -45,6 +45,8 @@ pub const HostType = enum {
 };
 
 pub const UriRef = struct {
+    raw: []const u8 = "",
+
     kind: Kind = .indeterminate,
     scheme: ?[]const u8 = null,
     userinfo: ?[]const u8 = null,
@@ -114,7 +116,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
     if (s.len == 0) return InvalidUriError.EmptyUriError;
     if (std.mem.indexOfAny(u8, s, &.{ ' ', 0x7f })) |_| return InvalidUriError.InvalidCharacterError;
 
-    var out = UriRef{};
+    var out = UriRef{ .raw = s };
     var rest = s;
 
     out.scheme, rest = try parseScheme(rest);
