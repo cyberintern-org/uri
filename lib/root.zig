@@ -50,13 +50,15 @@ pub const UriRef = struct {
     userinfo: ?[]const u8 = null,
     host: ?[]const u8 = null,
     host_type: ?HostType = null,
+    zone_id: ?[]const u8 = null,
     port: ?u16 = null,
     path: []const u8 = "",
     query: ?[]const u8 = null,
     fragment: ?[]const u8 = null,
 };
 
-/// Parser implementation according to [RFC 3986, Chapter 3. Syntax Components](https://datatracker.ietf.org/doc/html/rfc3986#autoid-17).
+/// Parser implementation according to [RFC 3986, Chapter 3. Syntax Components](https://datatracker.ietf.org/doc/html/rfc3986#autoid-17)
+/// and updated by [RFC 6874, Chapter 2. Specification](https://datatracker.ietf.org/doc/html/rfc6874).
 ///
 /// Basic syntax:
 /// - URI-reference = URI | relative-ref
@@ -70,8 +72,10 @@ pub const UriRef = struct {
 /// - authority = [ userinfo "@" ] host [ ":" port ]
 ///   - userinfo = *( unreserved / pct-encoded / sub-delims / ":" )
 ///   - host = IP-literal / IPv4address / reg-name
-///     - IP-literal = "[" ( IPv6address / IPvFuture ) "]"
+///     - IP-literal = "[" ( IPv6address / IPv6addrz / IPvFuture ) "]"
 ///       - IPvFuture = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
+///       - IPv6addrz = IPv6address "%25" ZoneID
+///        - ZoneID = 1*( unreserved / pct-encoded)
 ///       - IPv6address =                 6( h16 ":" ) ls32
 ///            /                     "::" 5( h16 ":" ) ls32
 ///            / [             h16 ] "::" 4( h16 ":" ) ls32
@@ -133,7 +137,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             authority = authority[0..sl];
         }
 
-        out.userinfo, out.host, out.host_type, out.port = try parseAuthority(authority);
+        out.userinfo, out.host, out.host_type, out.zone_id, out.port = try parseAuthority(authority);
     }
 
     out.path = rest;
@@ -157,10 +161,11 @@ fn parseScheme(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8 }
     return .{ null, s };
 }
 
-fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8, ?HostType, ?u16 } {
+fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u8, ?HostType, ?[]const u8, ?u16 } {
     const userinfo, var host = splitLastStart(s, '@');
     var host_type: ?HostType = null;
     var port_string: ?[]const u8 = null;
+    var zone_id: ?[]const u8 = null;
 
     if (std.mem.startsWith(u8, host, "[")) { // IP-literal
         const temp = host[1..];
@@ -173,11 +178,23 @@ fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u
         if (try parseIPvFuture(host)) |h| {
             host = h;
             host_type = HostType.ipvfuture;
-        } else if (try parseIPv6(host)) |h| {
-            host = h;
-            host_type = HostType.ipv6;
         } else {
-            return InvalidUriError.InvalidHostError;
+            host, zone_id = splitFirstEnd(host, '%');
+            if (zone_id) |z| {
+                if (z.len < 4 or std.mem.eql(u8, z[0..3], "%25")) return InvalidUriError.InvalidHostError;
+                for (z[3..]) |c| {
+                    if (!std.ascii.isAlphanumeric(c) and std.mem.indexOfScalar(u8, &unreserved_no_alphanumeric, c) == null and c != '%') {
+                        return InvalidUriError.InvalidHostError; // invalid character in zone ID
+                    }
+                }
+                zone_id = z[3..];
+            }
+            if (try parseIPv6(host)) |h| {
+                host = h;
+                host_type = HostType.ipv6;
+            } else {
+                return InvalidUriError.InvalidHostError; // invalid IPv6 address
+            }
         }
     } else { // IPv4address or reg-name
         host, port_string = splitLastEnd(host, ':');
@@ -192,10 +209,10 @@ fn parseAuthority(s: []const u8) InvalidUriError!struct { ?[]const u8, []const u
 
     if (port_string) |p| {
         const port = std.fmt.parseInt(u16, p, 10) catch return InvalidUriError.InvalidPortError;
-        return .{ userinfo, host, host_type, port };
+        return .{ userinfo, host, host_type, zone_id, port };
     }
 
-    return .{ userinfo, host, host_type, null };
+    return .{ userinfo, host, host_type, zone_id, null };
 }
 
 fn parseIPvFuture(s: []const u8) InvalidUriError!?[]const u8 {
@@ -240,8 +257,48 @@ fn parseIPvFuture(s: []const u8) InvalidUriError!?[]const u8 {
 }
 
 fn parseIPv6(s: []const u8) InvalidUriError!?[]const u8 {
-    _ = s;
-    return null;
+    var parts = std.mem.splitSequence(u8, s, "::");
+    var left = parts.next();
+    var right = parts.next();
+
+    if (right == null) { // only right -> 6(h16 ":") ls32
+        right = left;
+        left = null;
+    }
+
+    var left_parts_count: i32 = if (left == null) -1 else 0;
+
+    if (left != null and left.?.len > 0) {
+        var left_parts = std.mem.splitScalar(u8, left orelse "", ':');
+
+        while (left_parts.next()) |part| : (left_parts_count += 1) {
+            if (try parseh16(part) == null) return InvalidUriError.InvalidHostError; // h16 must be 1-4 hex digits
+        }
+
+        if (left_parts_count > 7) return InvalidUriError.InvalidHostError; // too many parts
+        if (right.?.len == 0) return s; // *6(h16 ":") h16 "::"
+    }
+
+    var rest: ?[]const u8, var ls32 = splitLastEnd(right.?, ':');
+
+    if (ls32 == null) { // ... "::" ls32 / ... "::" h16
+        ls32 = rest;
+        rest = null;
+    }
+
+    if (try parsels32(ls32.?) == null) return InvalidUriError.InvalidHostError; // ls32 must be IPv4address or h16
+
+    if (rest) |r| {
+        var rest_parts = std.mem.splitScalar(u8, r, ':');
+        var rest_parts_count: usize = 0;
+        while (rest_parts.next()) |part| : (rest_parts_count += 1) {
+            if (try parseh16(part) == null) return InvalidUriError.InvalidHostError; // h16 must be 1-4 hex digits
+        }
+
+        if (rest_parts_count > (6 - @min(6, left_parts_count))) return InvalidUriError.InvalidHostError; // too many parts
+    }
+
+    return s;
 }
 
 fn parseIPv4(s: []const u8) InvalidUriError!?[]const u8 {
@@ -288,6 +345,16 @@ fn parseRegName(s: []const u8) InvalidUriError![]const u8 {
         return InvalidUriError.InvalidHostError; // invalid character
     }
     return s;
+}
+
+fn parseh16(s: []const u8) InvalidUriError!?[]const u8 {
+    if (s.len == 0 or s.len > 4) return null; // h16 must be 1-4 hex digits
+    for (s) |c| if (!std.ascii.isHex(c)) return null;
+    return s;
+}
+
+fn parsels32(s: []const u8) InvalidUriError!?[]const u8 {
+    return if (try parseIPv4(s)) |ip| ip else try parseh16(s);
 }
 
 fn splitFirstStart(s: []const u8, delimiter: u8) struct { ?[]const u8, []const u8 } {
@@ -534,6 +601,13 @@ comptime {
                     try std.testing.expectEqual(host_type, parsed.host_type.?);
                 } else {
                     try std.testing.expectEqual(null, parsed.host_type);
+                }
+
+                if (entry.out.zone_id) |zone_id| {
+                    try std.testing.expect(parsed.zone_id != null);
+                    try std.testing.expectEqualStrings(zone_id, parsed.zone_id.?);
+                } else {
+                    try std.testing.expectEqual(null, parsed.zone_id);
                 }
 
                 try std.testing.expectEqual(entry.out.port, parsed.port);
