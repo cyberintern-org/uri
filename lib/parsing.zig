@@ -128,12 +128,17 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             var in_ls32 = false;
 
             for (rest, 0..) |c, i| switch (c) {
-                ']' => {
+                ']', '%' => {
                     if (colons == 1) return InvalidUriError.InvalidHostError; // must end with 0 or 2 colons
                     if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
                     out.host = rest[0..i];
-                    rest = rest[i + 1 ..];
-                    continue :parser .host_end;
+                    if (c == ']') {
+                        rest = rest[i + 1 ..];
+                        continue :parser .host_end;
+                    } else {
+                        rest = rest[i..];
+                        continue :parser .zone_id;
+                    }
                 },
                 ':' => switch (colons) {
                     0 => {
@@ -162,12 +167,6 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                     rest = rest[i_cache..];
                     continue :parser .host_ipv4;
                 },
-                '%' => {
-                    if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
-                    out.host = rest[0..i];
-                    rest = rest[i..];
-                    continue :parser .zone_id;
-                },
                 else => return InvalidUriError.InvalidHostError, // invalid character
             };
         },
@@ -194,8 +193,13 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                     if (i == 0 or len == 0) return InvalidUriError.InvalidHostError;
                     if (parts != 3) return InvalidUriError.InvalidHostError;
                     out.host = rest_cache[0 .. i_cache + i];
-                    rest = rest[i + 1 ..];
-                    continue :parser if (c == ']') .host_end else .zone_id;
+                    if (c == ']') {
+                        rest = rest[i + 1 ..];
+                        continue :parser .host_end;
+                    } else {
+                        rest = rest[i..];
+                        continue :parser .zone_id;
+                    }
                 },
                 '0'...'9' => {
                     if (len > 3) return InvalidUriError.InvalidHostError; // too long
@@ -632,6 +636,18 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .scheme = "http",
             .host = "2001:db8::192.168.0.1",
             .host_type = .ipv6,
+            .path = "/path/to/resource",
+        },
+    },
+    .{ // IPv6 address with IPv4, zone ID and port
+        .in = "http://[2001:db8::192.168.0.1%25eth0]:8080/path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "2001:db8::192.168.0.1",
+            .host_type = .ipv6,
+            .zone_id = "eth0",
+            .port = 8080,
             .path = "/path/to/resource",
         },
     },
