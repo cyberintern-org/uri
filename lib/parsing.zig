@@ -304,11 +304,11 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             };
         },
         .port => {
-            var port: u16 = 0;
+            var port: ?u16 = null;
 
             for (rest, 0..) |c, i| switch (c) {
                 '0'...'9' => {
-                    port = port * 10 + (c - '0');
+                    port = (port orelse 0) * 10 + (c - '0');
                 },
                 '/' => {
                     out.port = port;
@@ -648,6 +648,16 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .host_type = .ipv6,
             .zone_id = "eth0",
             .port = 8080,
+            .path = "/path/to/resource",
+        },
+    },
+    .{ // empty port
+        .in = "http://example.com:/path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
             .path = "/path/to/resource",
         },
     },
