@@ -55,7 +55,9 @@ pub const UriRef = struct {
 pub const InvalidUriError = parsing.InvalidUriError;
 
 /// Parser implementation according to [RFC 3986, Chapter 3. Syntax Components](https://datatracker.ietf.org/doc/html/rfc3986#autoid-17)
-/// and updated by [RFC 6874, Chapter 2. Specification](https://datatracker.ietf.org/doc/html/rfc6874).
+/// and [RFC 6874, Chapter 2. Specification](https://datatracker.ietf.org/doc/html/rfc6874).
+///
+/// (Approximately) single-pass and without dynamic memory allocation.
 ///
 /// Basic syntax:
 /// - URI-reference = URI | relative-ref

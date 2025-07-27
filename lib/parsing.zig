@@ -531,6 +531,17 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .query = "query%20with%20spaces",
         },
     },
+    .{ // query with question mark
+        .in = "http://example.com/path?query=with?question",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "/path",
+            .query = "query=with?question",
+        },
+    },
     .{ // no authority, path-rootless
         .in = "mailto:john.doe@example.com",
         .out = UriRef{
@@ -539,7 +550,7 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .path = "john.doe@example.com",
         },
     },
-    .{ // no authority, path-absolute
+    .{ // empty authority, path-abempty
         .in = "file:///path/to/file.txt",
         .out = UriRef{
             .kind = .uri,
@@ -549,11 +560,28 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .path = "/path/to/file.txt",
         },
     },
+    .{ // no authority, path-absolute
+        .in = "http:/path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .path = "/path/to/resource",
+        },
+    },
     .{ // no authority, path-empty
         .in = "http:",
         .out = UriRef{
             .kind = .uri,
             .scheme = "http",
+        },
+    },
+    .{ // no authority, path looking like one
+        .in = "http:example.com/?query",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .path = "example.com/",
+            .query = "query",
         },
     },
     .{ // unescaped :// in query should not create a scheme
@@ -651,6 +679,16 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .path = "/path/to/resource",
         },
     },
+    .{ // reg-name with sub-delims
+        .in = "mysql://a,b,c/default",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "mysql",
+            .host = "a,b,c",
+            .host_type = .domain,
+            .path = "/default",
+        },
+    },
     .{ // empty port
         .in = "http://example.com:/path/to/resource",
         .out = UriRef{
@@ -659,6 +697,27 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
             .host = "example.com",
             .host_type = .domain,
             .path = "/path/to/resource",
+        },
+    },
+    .{ // path with two leeading slashes
+        .in = "http://example.com//path/to/resource",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "http",
+            .host = "example.com",
+            .host_type = .domain,
+            .path = "//path/to/resource",
+        },
+    },
+    .{ // magnet path with two leading slashes
+        .in = "magnet://?xt=urn:btih:1234567890abcdef1234567890abcdef12345678&dn=example",
+        .out = UriRef{
+            .kind = .uri,
+            .scheme = "magnet",
+            .host = "",
+            .host_type = .domain,
+            .path = "",
+            .query = "xt=urn:btih:1234567890abcdef1234567890abcdef12345678&dn=example",
         },
     },
 };
