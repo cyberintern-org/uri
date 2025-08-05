@@ -18,7 +18,6 @@
 const std = @import("std");
 const root = @import("root.zig");
 const UriRef = root.UriRef;
-const Kind = root.Kind;
 const HostType = root.HostType;
 
 // API
@@ -50,14 +49,12 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                 'A'...'Z', 'a'...'z' => {},
                 '0'...'9', '+', '-', '.' => if (i == 0) break,
                 ':' => if (i == 0) return InvalidUriError.EmptySchemeError else {
-                    out.kind = .uri;
                     out.scheme = s[0..i];
                     rest = s[i + 1 ..];
                     continue :parser .authority_start;
                 },
                 else => break,
             };
-            out.kind = .relative_ref;
             continue :parser .authority_start;
         },
         .authority_start => if (!std.mem.startsWith(u8, rest, "//")) continue :parser .path else {
@@ -329,7 +326,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             };
         },
         .path_start => {
-            if (out.kind == .relative_ref and rest.len > 0 and rest[0] != '/') continue :parser .path_noscheme;
+            if (out.scheme == null and rest.len > 0 and rest[0] != '/') continue :parser .path_noscheme;
             continue :parser .path; // path-abempty, path-absolute, path-empty, path-rootless
         },
         .path_noscheme => {
@@ -430,7 +427,7 @@ const CharType = enum {
     gen_delim,
 };
 
-fn classify(c: u8) InvalidUriError!CharType {
+inline fn classify(c: u8) InvalidUriError!CharType {
     return switch (c) {
         'A'...'Z', 'a'...'z', '0'...'9', '.', '-', '_', '~' => .unreserved,
         '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=' => .sub_delim,
@@ -439,7 +436,7 @@ fn classify(c: u8) InvalidUriError!CharType {
     };
 }
 
-fn validatePctEncoding(s: []const u8) InvalidUriError!void {
+inline fn validatePctEncoding(s: []const u8) InvalidUriError!void {
     if (s.len < 2 or !std.ascii.isHex(s[0]) or !std.ascii.isHex(s[1])) return InvalidUriError.InvalidCharacterError;
 }
 
@@ -449,7 +446,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // URI, authority, path-empty
         .in = "http://example.com",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -459,7 +455,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // URI, authority, path-absolute
         .in = "http://example.com/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -469,7 +464,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // path with percent-encoding
         .in = "http://example.com/path/to/resource%20with%20spaces",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -479,7 +473,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // fragment with percent-encoding
         .in = "http://example.com/path#fragment%20with%20spaces",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -490,7 +483,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // userinfo
         .in = "http://user@example.com",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .userinfo = "user",
             .host = "example.com",
@@ -501,7 +493,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // userinfo with percent-encoding
         .in = "http://user%20name@example.com",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .userinfo = "user%20name",
             .host = "example.com",
@@ -512,7 +503,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // empty query
         .in = "http://example.com/path?",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -523,7 +513,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // query with percent-encoding
         .in = "http://example.com/path?query%20with%20spaces",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -534,7 +523,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // query with question mark
         .in = "http://example.com/path?query=with?question",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -545,7 +533,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // no authority, path-rootless
         .in = "mailto:john.doe@example.com",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "mailto",
             .path = "john.doe@example.com",
         },
@@ -553,7 +540,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // empty authority, path-abempty
         .in = "file:///path/to/file.txt",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "file",
             .host = "",
             .host_type = .domain,
@@ -563,7 +549,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // no authority, path-absolute
         .in = "http:/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .path = "/path/to/resource",
         },
@@ -571,14 +556,12 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // no authority, path-empty
         .in = "http:",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
         },
     },
     .{ // no authority, path looking like one
         .in = "http:example.com/?query",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .path = "example.com/",
             .query = "query",
@@ -587,7 +570,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // unescaped :// in query should not create a scheme
         .in = "http://example.com/path?from=http://example.com",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -598,7 +580,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // leading // without scheme should create an authority
         .in = "//example.com/path/to/resource",
         .out = UriRef{
-            .kind = .relative_ref,
             .host = "example.com",
             .host_type = .domain,
             .path = "/path/to/resource",
@@ -607,7 +588,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // leading // without scheme, with userinfo, path, and query
         .in = "//user@example.com/path/to/resource?query=value",
         .out = UriRef{
-            .kind = .relative_ref,
             .userinfo = "user",
             .host = "example.com",
             .host_type = .domain,
@@ -618,7 +598,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // IPv4 address in authority
         .in = "http://192.168.0.1/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "192.168.0.1",
             .host_type = .ipv4,
@@ -628,7 +607,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // IPv4 and port in authority
         .in = "http://192.168.0.1:8080/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "192.168.0.1",
             .host_type = .ipv4,
@@ -639,7 +617,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // IPv6 address in authority
         .in = "http://[2001:db8::1]/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "2001:db8::1",
             .host_type = .ipv6,
@@ -649,7 +626,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // IPv6 address with zone ID in authority
         .in = "http://[2001:db8::1%25eth0]/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "2001:db8::1",
             .host_type = .ipv6,
@@ -660,7 +636,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // IPv6 address with IPv4 as last part
         .in = "http://[2001:db8::192.168.0.1]/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "2001:db8::192.168.0.1",
             .host_type = .ipv6,
@@ -670,7 +645,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // IPv6 address with IPv4, zone ID and port
         .in = "http://[2001:db8::192.168.0.1%25eth0]:8080/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "2001:db8::192.168.0.1",
             .host_type = .ipv6,
@@ -682,7 +656,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // reg-name with sub-delims
         .in = "mysql://a,b,c/default",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "mysql",
             .host = "a,b,c",
             .host_type = .domain,
@@ -692,7 +665,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // empty port
         .in = "http://example.com:/path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -702,7 +674,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // path with two leeading slashes
         .in = "http://example.com//path/to/resource",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "http",
             .host = "example.com",
             .host_type = .domain,
@@ -712,7 +683,6 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     .{ // magnet path with two leading slashes
         .in = "magnet://?xt=urn:btih:1234567890abcdef1234567890abcdef12345678&dn=example",
         .out = UriRef{
-            .kind = .uri,
             .scheme = "magnet",
             .host = "",
             .host_type = .domain,
@@ -729,11 +699,9 @@ comptime {
             test {
                 const parsed = try parse(entry.in);
 
-                try std.testing.expectEqual(entry.out.kind, parsed.kind);
-
-                if (entry.out.kind == .uri) {
+                if (entry.out.scheme) |scheme| {
                     try std.testing.expect(parsed.scheme != null);
-                    try std.testing.expectEqualStrings(entry.out.scheme.?, parsed.scheme.?);
+                    try std.testing.expectEqualStrings(scheme, parsed.scheme.?);
                 } else {
                     try std.testing.expectEqual(null, parsed.scheme);
                 }

@@ -23,12 +23,6 @@ const parsing = @import("parsing.zig");
 
 // API
 
-pub const Kind = enum {
-    indeterminate,
-    uri,
-    relative_ref,
-};
-
 pub const HostType = enum {
     domain,
     ipv4,
@@ -39,7 +33,6 @@ pub const HostType = enum {
 pub const UriRef = struct {
     raw: []const u8 = "",
 
-    kind: Kind = .indeterminate,
     scheme: ?[]const u8 = null,
     userinfo: ?[]const u8 = null,
     host: ?[]const u8 = null,
