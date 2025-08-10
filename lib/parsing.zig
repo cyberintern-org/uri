@@ -23,12 +23,11 @@ const HostType = root.HostType;
 // API
 
 pub const InvalidUriError = error{
-    InvalidCharacterError,
     EmptyUriError,
-    EmptySchemeError,
+    InvalidSchemeError,
+    InvalidUserinfoError,
     InvalidHostError,
     InvalidPortError,
-    InvalidPathNoschemeError,
     InvalidPathError,
     InvalidQueryError,
     InvalidFragmentError,
@@ -40,409 +39,350 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
     var out: UriRef = .{ .raw = s };
     var rest = s;
 
-    var rest_cache = s;
-    var i_cache: usize = 0;
-
-    parser: switch (ParsingState.scheme) {
-        .scheme => {
-            for (rest, 0..) |c, i| switch (c) {
-                'A'...'Z', 'a'...'z' => {},
-                '0'...'9', '+', '-', '.' => if (i == 0) break,
-                ':' => if (i == 0) return InvalidUriError.EmptySchemeError else {
-                    out.scheme = s[0..i];
-                    rest = s[i + 1 ..];
-                    continue :parser .authority_start;
-                },
-                else => break,
-            };
-            continue :parser .authority_start;
+    scheme: for (s, 0..) |c, i| switch (c) {
+        'A'...'Z', 'a'...'z' => {},
+        '0'...'9', '+', '-', '.' => if (i == 0) break :scheme,
+        ':' => if (i == 0) return InvalidUriError.InvalidSchemeError else {
+            out.scheme = s[0..i];
+            rest = s[i + 1 ..];
+            break :scheme;
         },
-        .authority_start => if (!std.mem.startsWith(u8, rest, "//")) continue :parser .path else {
-            rest = rest[2..];
-            continue :parser .authority;
-        },
-        .authority => {
-            out.host = "";
-            out.host_type = .domain;
-            if (rest.len > 0) switch (rest[0]) {
-                '[' => {
-                    rest = rest[1..];
-                    if (rest.len == 0) return InvalidUriError.InvalidHostError;
-                    if (rest[0] == 'v') {
-                        out.host_type = .ipvfuture;
-                        rest = rest[1..];
-                        continue :parser .host_ipvfuture;
-                    }
-                    out.host_type = .ipv6;
-                    continue :parser .host_ipv6;
-                },
-                '0'...'9' => {
-                    out.host_type = .ipv4;
-                    continue :parser .host_ipv4;
-                },
-                '/' => continue :parser .path,
-                else => continue :parser .host_regname,
-            };
-        },
-        .host_ipvfuture => {
-            var found_dot = false;
-            var found_second = false;
+        else => break :scheme,
+    };
 
-            for (rest, 0..) |c, i| switch (c) {
-                '.' => {
-                    if (found_dot or i == 0) return InvalidUriError.InvalidHostError;
-                    found_dot = true;
-                },
-                ']' => {
-                    if (!found_dot or !found_second) return InvalidUriError.InvalidHostError;
-                    out.host = rest[0..i];
-                    rest = rest[i + 1 ..];
-                    continue :parser .host_end;
-                },
-                'A'...'F', 'a'...'f', '0'...'9' => {
-                    if (found_dot) {
-                        found_second = true;
-                    }
-                },
-                else => {
-                    if (!found_dot) return InvalidUriError.InvalidHostError;
-                    if (c == ':') continue;
-                    switch (try classify(c)) {
-                        .unreserved, .sub_delim => {},
-                        .gen_delim => return InvalidUriError.InvalidHostError,
-                    }
-                },
-            };
+    if (std.mem.startsWith(u8, rest, "//")) authority: {
+        out.host = "";
+        out.host_type = HostType.domain;
+        rest = rest[2..];
 
-            return InvalidUriError.InvalidHostError;
-        },
-        .host_ipv6 => {
-            var left_parts: usize = 0;
-            var right_parts: usize = 0;
-            var len: usize = 0;
-            var colons: usize = 0;
-            var in_right = false;
-            var in_ls32 = false;
+        if (rest.len == 0 or rest[0] == '/' or rest[0] == '?' or rest[0] == '#') {
+            break :authority;
+        }
 
-            for (rest, 0..) |c, i| switch (c) {
-                ']', '%' => {
-                    if (colons == 1) return InvalidUriError.InvalidHostError; // must end with 0 or 2 colons
-                    if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
-                    out.host = rest[0..i];
-                    if (c == ']') {
-                        rest = rest[i + 1 ..];
-                        continue :parser .host_end;
-                    } else {
-                        rest = rest[i..];
-                        continue :parser .zone_id;
-                    }
-                },
-                ':' => switch (colons) {
-                    0 => {
-                        len = 0;
-                        colons += 1;
-                    },
-                    1 => {
-                        if (in_right) return InvalidUriError.InvalidHostError; // double colon in right part
-                        if (left_parts > 4) in_right = true else in_ls32 = true;
-                        colons += 1;
-                    },
-                    else => return InvalidUriError.InvalidHostError, // too many colons
-                },
-                '0'...'9', 'A'...'F', 'a'...'f' => {
-                    if (len == 0) {
-                        if (in_right) right_parts += 1 else left_parts += 1;
-                    }
-                    colons = 0;
-                    len += 1;
-                },
-                '.' => {
-                    if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
-                    i_cache = std.mem.lastIndexOfScalar(u8, rest[0..i], ':') orelse return InvalidUriError.InvalidHostError; // l32 with dot must be after last colon
-                    i_cache += 1;
-                    rest_cache = rest;
-                    rest = rest[i_cache..];
-                    continue :parser .host_ipv4;
-                },
-                else => return InvalidUriError.InvalidHostError, // invalid character
-            };
-        },
-        .host_ipv4 => {
-            var parts: usize = 0;
-            var len: usize = 0;
-
-            for (rest, 0..) |c, i| switch (c) {
-                '.' => {
-                    if (i == 0 or len == 0) return InvalidUriError.InvalidHostError;
-                    parts += 1;
-                    len = 0;
-                },
-                ':', '/', '?', '#' => {
-                    if (out.host_type == .ipv6) return InvalidUriError.InvalidHostError; // must end with ]
-                    if (i == 0 or len == 0) return InvalidUriError.InvalidHostError;
-                    if (parts != 3) return InvalidUriError.InvalidHostError;
-                    out.host = rest[0..i];
-                    rest = rest[i..];
-                    continue :parser .host_end;
-                },
-                ']', '%' => {
-                    if (out.host_type == .ipv4) return InvalidUriError.InvalidHostError; // only valid when ipv4 is a l32 of ipv6
-                    if (i == 0 or len == 0) return InvalidUriError.InvalidHostError;
-                    if (parts != 3) return InvalidUriError.InvalidHostError;
-                    out.host = rest_cache[0 .. i_cache + i];
-                    if (c == ']') {
-                        rest = rest[i + 1 ..];
-                        continue :parser .host_end;
-                    } else {
-                        rest = rest[i..];
-                        continue :parser .zone_id;
-                    }
-                },
-                '0'...'9' => {
-                    if (len > 3) return InvalidUriError.InvalidHostError; // too long
-
-                    switch (len) {
-                        0 => {}, // first digit, we ignore it for now
-                        1 => if (rest[i - 1] == '0') return InvalidUriError.InvalidHostError, // leading zero
-                        2 => switch (rest[i - 2]) {
-                            '1' => {}, // 100 - 199
-                            '2' => switch (rest[i - 1]) {
-                                '0'...'4' => {}, // 200 - 249
-                                '5' => if (c > '5') return InvalidUriError.InvalidHostError, // 250 - 255
-                                else => return InvalidUriError.InvalidHostError,
-                            },
-                            else => return InvalidUriError.InvalidHostError,
-                        },
-                        else => unreachable,
-                    }
-
-                    len += 1;
-                },
-                else => return InvalidUriError.InvalidHostError,
-            };
-
-            if (parts != 3 or len == 0) return InvalidUriError.InvalidHostError;
-            out.host = rest;
-        },
-        .host_regname => {
+        if (std.mem.indexOfScalar(u8, @constCast(&std.mem.splitScalar(u8, rest, '/')).first(), '@') != null) {
             var i: usize = 0;
-            var in_userinfo = false;
 
             while (i < rest.len) : (i += 1) switch (rest[i]) {
+                ':' => {},
+                '%' => {
+                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidUserinfoError; // invalid pct-encoding in userinfo
+                    i += 2;
+                },
                 '@' => {
                     out.userinfo = rest[0..i];
                     rest = rest[i + 1 ..];
-                    continue :parser .authority;
+                    break;
                 },
-                '%' => {
-                    try validatePctEncoding(rest[i + 1 ..]);
-                    i += 2;
-                },
-                '/', '?', '#' => {
-                    out.host = rest[0..i];
-                    rest = rest[i..];
-                    continue :parser .host_end;
-                },
-                ':' => { // special case, we might be in a userinfo or start port
-                    if (in_userinfo) continue;
-                    if (std.mem.indexOfScalar(u8, @constCast(&std.mem.splitScalar(u8, rest, '/')).first(), '@') != null) {
-                        in_userinfo = true;
-                        continue;
-                    }
-                    out.host = rest[0..i];
-                    rest = rest[i + 1 ..];
-                    continue :parser .port;
-                },
-                else => switch (try classify(rest[i])) {
+                else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim => return InvalidUriError.InvalidHostError,
+                    .gen_delim, .unknown => return InvalidUriError.InvalidUserinfoError,
                 },
             };
+        }
 
-            out.host = rest;
-        },
-        .host_end => {
-            if (rest.len == 0) break :parser;
-            switch (rest[0]) {
-                '/' => continue :parser .path_start,
-                ':' => {
-                    rest = rest[1..];
-                    continue :parser .port;
-                },
-                '?' => {
-                    rest = rest[1..];
-                    continue :parser .query;
-                },
-                '#' => {
-                    rest = rest[1..];
-                    continue :parser .fragment;
-                },
-                else => return InvalidUriError.InvalidHostError, // unexpected character after host
-            }
-        },
-        .zone_id => {
-            if (out.host_type != .ipv6) return InvalidUriError.InvalidHostError; // zone ID only valid for IPv6
-            if (rest.len < 4) return InvalidUriError.InvalidHostError; // must be at least 4 characters (%25 + at least 1 pct-encoded / unreserved character)
-            if (rest[0] != '%' or rest[1] != '2' or rest[2] != '5') return InvalidUriError.InvalidHostError; // must start with %25
+        out.host_type = switch (rest[0]) {
+            '[' => iplit: {
+                rest = rest[1..];
+                if (rest.len == 0) return InvalidUriError.InvalidHostError; // empty IPv6/IPvFuture, trailing '['
+                if (rest[0] != 'v') break :iplit .ipv6;
+                rest = rest[1..];
+                break :iplit .ipvfuture;
+            },
+            '0'...'9' => .ipv4,
+            else => .domain,
+        };
 
-            var i: usize = 3;
-            while (i < rest.len) : (i += 1) switch (rest[i]) {
-                'A'...'Z', 'a'...'z', '0'...'9', '.', '-', '_', '~' => {},
-                '%' => {
-                    try validatePctEncoding(rest[i + 1 ..]);
-                    i += 2;
-                },
-                ']' => {
-                    out.zone_id = rest[3..i];
-                    rest = rest[i + 1 ..];
-                    continue :parser .host_end;
-                },
-                else => return InvalidUriError.InvalidHostError, // invalid character in zone ID
-            };
-        },
-        .port => {
-            var port: ?u16 = null;
+        parser: switch (out.host_type.?) {
+            .ipvfuture => {
+                var found_dot = false;
+                var found_second = false;
+
+                for (rest, 0..) |c, i| switch (c) {
+                    '.' => {
+                        if (i == 0) return InvalidUriError.InvalidHostError; // empty first part
+                        if (found_dot) return InvalidUriError.InvalidHostError; // too many parts
+                        found_dot = true;
+                    },
+                    ']' => {
+                        if (!found_dot or !found_second) return InvalidUriError.InvalidHostError; // not enough parts
+                        out.host = rest[0..i];
+                        rest = rest[i + 1 ..];
+                        break :parser;
+                    },
+                    'A'...'F', 'a'...'f', '0'...'9' => found_second = found_dot,
+                    ':' => if (!found_dot) return InvalidUriError.InvalidHostError, // ':' can appear only in the second part
+                    else => {
+                        if (!found_dot) return InvalidUriError.InvalidHostError; // characters other than HEXDIG can only appear in the second part
+                        switch (classify(c)) {
+                            .unreserved, .sub_delim => {},
+                            .gen_delim, .unknown => return InvalidUriError.InvalidHostError, // invalid character in IPvFuture
+                        }
+                    },
+                };
+
+                return InvalidUriError.InvalidHostError; // doesn't end in ']'
+            },
+            .ipv6 => {
+                var left_parts: usize = 0;
+                var right_parts: usize = 0;
+                var len: usize = 0;
+                var colons: usize = 0;
+                var in_right = false;
+                var in_ls32 = false;
+
+                var i: usize = 0;
+                l: while (i < rest.len) : (i += 1) switch (rest[i]) {
+                    ']' => {
+                        if (colons == 1) return InvalidUriError.InvalidHostError; // must end with 0 or 2 colons
+                        if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
+                        out.host = rest[0..i];
+                        rest = if (i < rest.len - 1) rest[i + 1 ..] else "";
+                        break :parser;
+                    },
+                    '%' => {
+                        if (colons == 1) return InvalidUriError.InvalidHostError; // must end with 0 or 2 colons
+                        if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
+                        out.host = rest[0..i];
+                        rest = rest[i..];
+                        break :l;
+                    },
+                    ':' => switch (colons) {
+                        0 => {
+                            len = 0;
+                            colons += 1;
+                        },
+                        1 => {
+                            if (in_right) return InvalidUriError.InvalidHostError; // double colon in right part
+                            if (left_parts > 4) in_right = true else in_ls32 = true;
+                            colons += 1;
+                        },
+                        else => return InvalidUriError.InvalidHostError, // too many colons
+                    },
+                    '0'...'9', 'A'...'F', 'a'...'f' => {
+                        if (len == 0) {
+                            if (in_right) right_parts += 1 else left_parts += 1;
+                        }
+                        colons = 0;
+                        len += 1;
+                    },
+                    '.' => {
+                        if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
+                        i = std.mem.lastIndexOfScalar(u8, rest[0..i], ':') orelse return InvalidUriError.InvalidHostError; // l32 with dot must be after last colon
+                        i += try parseIpv4(rest[i + 1 ..], true);
+                        out.host = rest[0..i];
+                    },
+                    else => return InvalidUriError.InvalidHostError, // invalid character in IPv6
+                };
+
+                if (rest.len > 0 and rest[0] == '%') {
+                    if (rest.len < 4) return InvalidUriError.InvalidHostError; // must be at least 4 characters (%25 + at least 1 pct-encoded / unreserved character)
+                    if (rest[0] != '%' or rest[1] != '2' or rest[2] != '5') return InvalidUriError.InvalidHostError; // must start with %25
+
+                    i = 3;
+                    while (i < rest.len) : (i += 1) switch (rest[i]) {
+                        'A'...'Z', 'a'...'z', '0'...'9', '.', '-', '_', '~' => {},
+                        '%' => {
+                            if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidHostError; // invalid pct-encoding in zone ID
+                            i += 2;
+                        },
+                        ']' => {
+                            out.zone_id = rest[3..i];
+                            rest = rest[i + 1 ..];
+                            break :parser;
+                        },
+                        else => return InvalidUriError.InvalidHostError, // invalid character in zone ID
+                    };
+                }
+
+                return InvalidUriError.InvalidHostError; // doesn't end in ']'
+            },
+            .ipv4 => {
+                const host_end = try parseIpv4(rest, false);
+                out.host = rest[0..host_end];
+                rest = if (host_end == rest.len) "" else rest[host_end..];
+            },
+            .domain => {
+                var i: usize = 0;
+
+                while (i < rest.len) : (i += 1) switch (rest[i]) {
+                    '%' => {
+                        if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidHostError; // invalid pct-encoding in reg name
+                        i += 2;
+                    },
+                    ':', '/', '?', '#' => {
+                        out.host = rest[0..i];
+                        rest = rest[i..];
+                        break :parser;
+                    },
+                    else => switch (classify(rest[i])) {
+                        .unreserved, .sub_delim => {},
+                        .gen_delim, .unknown => return InvalidUriError.InvalidHostError, // invalidd character in reg name
+                    },
+                };
+
+                out.host = rest;
+                rest = "";
+            },
+        }
+
+        if (rest.len > 0 and rest[0] == ':') port: {
+            rest = rest[1..];
 
             for (rest, 0..) |c, i| switch (c) {
                 '0'...'9' => {
-                    port = (port orelse 0) * 10 + (c - '0');
+                    out.port = (out.port orelse 0) * 10 + (c - '0');
                 },
-                '/' => {
-                    out.port = port;
+                '/', '?', '#' => {
                     rest = rest[i..];
-                    continue :parser .path_start;
-                },
-                '?' => {
-                    out.port = port;
-                    rest = rest[i + 1 ..];
-                    continue :parser .query;
-                },
-                '#' => {
-                    out.port = port;
-                    rest = rest[i + 1 ..];
-                    continue :parser .fragment;
+                    break :port;
                 },
                 else => return InvalidUriError.InvalidPortError, // invalid character in port
             };
-        },
-        .path_start => {
-            if (out.scheme == null and rest.len > 0 and rest[0] != '/') continue :parser .path_noscheme;
-            continue :parser .path; // path-abempty, path-absolute, path-empty, path-rootless
-        },
-        .path_noscheme => {
-            for (rest) |c| switch (c) {
-                ':' => return InvalidUriError.InvalidPathNoschemeError,
-                '/', '?', '#' => break,
-                else => {},
-            };
 
-            continue :parser .path;
-        },
-        .path => {
-            var i: usize = 0;
+            rest = "";
+        }
+    }
 
-            while (i < rest.len) : (i += 1) switch (rest[i]) {
-                ':', '/', '@' => {},
-                '%' => {
-                    try validatePctEncoding(rest[i + 1 ..]);
-                    i += 2;
-                },
-                '?', '#' => {
-                    out.path = rest[0..i];
-                    const c = rest[i];
-                    rest = rest[i + 1 ..];
-                    continue :parser if (c == '?') .query else .fragment;
-                },
-                else => switch (try classify(rest[i])) {
-                    .unreserved, .sub_delim => {},
-                    .gen_delim => return InvalidUriError.InvalidPathError,
-                },
-            };
+    if (rest.len > 0) parser: switch (rest[0]) {
+        '?' => {
+            rest = rest[1..];
 
-            out.path = rest;
-        },
-        .query => {
             var i: usize = 0;
             while (i < rest.len) : (i += 1) switch (rest[i]) {
                 ':', '/', '?', '@' => {},
                 '%' => {
-                    try validatePctEncoding(rest[i + 1 ..]);
+                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidQueryError; // invalid pct-encoding in query
                     i += 2;
                 },
                 '#' => {
                     out.query = rest[0..i];
                     rest = rest[i + 1 ..];
-                    continue :parser .fragment;
+                    continue :parser '#';
                 },
-                else => switch (try classify(rest[i])) {
+                else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim => return InvalidUriError.InvalidQueryError,
+                    .gen_delim, .unknown => return InvalidUriError.InvalidQueryError, // invalid character in query
                 },
             };
+
             out.query = rest;
         },
-        .fragment => {
+        '#' => {
+            rest = rest[1..];
+
             var i: usize = 0;
             while (i < rest.len) : (i += 1) switch (rest[i]) {
                 ':', '/', '?', '@', '#' => {},
                 '%' => {
-                    try validatePctEncoding(rest[i + 1 ..]);
+                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidFragmentError; // invalid pct-encoding in fragment
                     i += 2;
                 },
-                else => switch (try classify(rest[i])) {
+                else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim => return InvalidUriError.InvalidQueryError,
+                    .gen_delim, .unknown => return InvalidUriError.InvalidFragmentError, // invalid character in fragment
                 },
             };
+
             out.fragment = rest;
         },
-    }
+        else => {
+            var validated_path_noscheme = out.scheme != null or rest[0] == ':';
+
+            var i: usize = 0;
+            while (i < rest.len) : (i += 1) switch (rest[i]) {
+                ':' => if (!validated_path_noscheme) return InvalidUriError.InvalidPathError, // ':' in first path part (when in path-noscheme)
+                '@' => {},
+                '/' => validated_path_noscheme = true,
+                '%' => {
+                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidPathError; // invalid pct-encoding in path
+                    i += 2;
+                },
+                '?', '#' => {
+                    out.path = rest[0..i];
+                    const c = rest[i];
+                    rest = rest[i..];
+                    continue :parser c;
+                },
+                else => switch (classify(rest[i])) {
+                    .unreserved, .sub_delim => {},
+                    .gen_delim, .unknown => return InvalidUriError.InvalidPathError, // invalid character in path
+                },
+            };
+
+            out.path = rest;
+        },
+    };
 
     return out;
 }
 
 // INTERNAL
 
-const ParsingState = enum {
-    scheme,
-    authority_start,
-    authority,
-    host_ipvfuture,
-    host_ipv6,
-    host_ipv4,
-    host_regname,
-    host_end,
-    zone_id,
-    port,
-    path_start,
-    path_noscheme,
-    path,
-    query,
-    fragment,
-};
+inline fn parseIpv4(s: []const u8, comptime ipv6: bool) InvalidUriError!usize {
+    var parts: usize = 0;
+    var len: usize = 0;
 
-const CharType = enum {
-    unreserved,
-    sub_delim,
-    gen_delim,
-};
+    for (s, 0..) |c, i| switch (c) {
+        '.' => {
+            if (len == 0) return InvalidUriError.InvalidHostError; // empty part
+            parts += 1;
+            len = 0;
+        },
+        ':', '/', '?', '#' => {
+            if (ipv6) return InvalidUriError.InvalidHostError; // must end with ]
+            if (len == 0) return InvalidUriError.InvalidHostError; // empty part
+            if (parts != 3) return InvalidUriError.InvalidHostError; // too many / not enough parts
+            return i;
+        },
+        ']', '%' => {
+            if (!ipv6) return InvalidUriError.InvalidHostError; // only valid when ipv4 is a l32 of ipv6
+            if (len == 0) return InvalidUriError.InvalidHostError; // empty part
+            if (parts != 3) return InvalidUriError.InvalidHostError; // too many / not enough parts
+            return i;
+        },
+        '0'...'9' => {
+            if (len > 3) return InvalidUriError.InvalidHostError; // too long part
 
-inline fn classify(c: u8) InvalidUriError!CharType {
+            switch (len) {
+                0 => {}, // first digit, we ignore it for now
+                1 => if (s[i - 1] == '0') return InvalidUriError.InvalidHostError, // leading zero
+                2 => switch (s[i - 2]) {
+                    '1' => {}, // 100 - 199
+                    '2' => switch (s[i - 1]) {
+                        '0'...'4' => {}, // 200 - 249
+                        '5' => if (c > '5') return InvalidUriError.InvalidHostError, // 250 - 255
+                        else => return InvalidUriError.InvalidHostError, // > 255
+                    },
+                    else => return InvalidUriError.InvalidHostError, // >= 300
+                },
+                else => unreachable,
+            }
+
+            len += 1;
+        },
+        else => return InvalidUriError.InvalidHostError,
+    };
+
+    if (parts != 3 or len == 0) return InvalidUriError.InvalidHostError;
+    return s.len;
+}
+
+inline fn classify(c: u8) enum { unknown, unreserved, sub_delim, gen_delim } {
     return switch (c) {
         'A'...'Z', 'a'...'z', '0'...'9', '.', '-', '_', '~' => .unreserved,
         '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=' => .sub_delim,
         ':', '/', '?', '#', '[', ']', '@' => .gen_delim,
-        else => InvalidUriError.InvalidCharacterError,
+        else => .unknown,
     };
 }
 
-inline fn validatePctEncoding(s: []const u8) InvalidUriError!void {
-    if (s.len < 2 or !std.ascii.isHex(s[0]) or !std.ascii.isHex(s[1])) return InvalidUriError.InvalidCharacterError;
+inline fn validatePctEncoding(s: []const u8) bool {
+    return s.len >= 2 and std.ascii.isHex(s[0]) and std.ascii.isHex(s[1]);
 }
 
 // TESTS
 
-const uri_entries = [_]struct { in: []const u8, out: UriRef }{
+const parsing_checks = [_]struct { in: []const u8, out: UriRef }{
     .{ // URI, authority, path-empty
         .in = "http://example.com",
         .out = UriRef{
@@ -692,9 +632,10 @@ const uri_entries = [_]struct { in: []const u8, out: UriRef }{
     },
 };
 
+const validity_checks = []struct { uri: []const u8, valid: bool }{};
+
 comptime {
-    // URI parsing
-    for (uri_entries) |entry| {
+    for (parsing_checks) |entry| {
         _ = struct {
             test {
                 const parsed = try parse(entry.in);
