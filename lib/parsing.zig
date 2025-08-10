@@ -632,8 +632,6 @@ const parsing_checks = [_]struct { in: []const u8, out: UriRef }{
     },
 };
 
-const validity_checks = []struct { uri: []const u8, valid: bool }{};
-
 comptime {
     for (parsing_checks) |entry| {
         _ = struct {
