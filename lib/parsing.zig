@@ -197,7 +197,10 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                 return InvalidUriError.InvalidHostError; // doesn't end in ']'
             },
             .ipv4 => {
-                const host_end = try parseIpv4(rest, false);
+                const host_end = parseIpv4(rest, false) catch {
+                    out.host_type = .domain; // if it fails, we assume it's a reg-name
+                    continue :parser .domain;
+                };
                 out.host = rest[0..host_end];
                 rest = if (host_end == rest.len) "" else rest[host_end..];
             },
