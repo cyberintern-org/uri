@@ -1,4 +1,4 @@
-// liburi - URI parsing, production and normalization implementation for the www cyberintern work
+// libwww/uri - URI parsing, production and normalization implementation for the WWW cyberintern workgroup
 // Copyright (C) 2025 [Cybernetic Internetionale](https://cyberintern.org)
 //
 // This library is free software; you can redistribute it and/or
@@ -19,7 +19,7 @@
 //! URI parsing, production and normalization implementation according to [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986).
 
 const std = @import("std");
-const parsing = @import("parsing.zig");
+const parsing = @import("uri/parsing.zig");
 
 // API
 

@@ -1,4 +1,4 @@
-// liburi - URI parsing, production and normalization implementation for the www cyberintern work
+// libwww/uri - URI parsing, production and normalization implementation for the WWW cyberintern workgroup
 // Copyright (C) 2025 [Cybernetic Internetionale](https://cyberintern.org)
 //
 // This library is free software; you can redistribute it and/or
@@ -16,9 +16,9 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
 // USA
 const std = @import("std");
-const root = @import("root.zig");
-const UriRef = root.UriRef;
-const HostType = root.HostType;
+const uri = @import("../uri.zig");
+const UriRef = uri.UriRef;
+const HostType = uri.HostType;
 
 // API
 
