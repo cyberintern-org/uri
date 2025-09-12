@@ -1,8 +1,8 @@
 .{
-    .name = .uri,
+    .name = .www,
     .version = "0.0.0",
-    .fingerprint = 0x841cb1210bfdfdf4, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.14.1",
+    .fingerprint = 0xe0ac6905e34525, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{},
     .paths = .{
         "build.zig",
