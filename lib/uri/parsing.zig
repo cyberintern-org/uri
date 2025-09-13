@@ -23,27 +23,20 @@ const HostType = uri.HostType;
 
 // API
 
-pub const InvalidUriError = error{
-    EmptyUriError,
-    InvalidSchemeError,
-    InvalidUserinfoError,
-    InvalidHostError,
-    InvalidPortError,
-    InvalidPathError,
-    InvalidQueryError,
-    InvalidFragmentError,
+pub const ParseError = error{
+    InvalidEncoding,
+    InvalidFormat,
+    UnexpectedCharacter,
 };
 
-pub fn parse(s: []const u8) InvalidUriError!UriRef {
-    if (s.len == 0) return InvalidUriError.EmptyUriError;
-
+pub fn parse(s: []const u8) ParseError!UriRef {
     var out: UriRef = .{};
     var rest = s;
 
     scheme: for (s, 0..) |c, i| switch (c) {
         'A'...'Z', 'a'...'z' => {},
         '0'...'9', '+', '-', '.' => if (i == 0) break :scheme,
-        ':' => if (i == 0) return InvalidUriError.InvalidSchemeError else {
+        ':' => if (i == 0) return ParseError.InvalidFormat else {
             out.scheme = s[0..i];
             rest = s[i + 1 ..];
             break :scheme;
@@ -66,7 +59,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             while (i < rest.len) : (i += 1) switch (rest[i]) {
                 ':' => {},
                 '%' => {
-                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidUserinfoError; // invalid pct-encoding in userinfo
+                    try validatePctEncoding(rest[i + 1 ..]); // invalid pct-encoding in userinfo
                     i += 2;
                 },
                 '@' => {
@@ -76,7 +69,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                 },
                 else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim, .unknown => return InvalidUriError.InvalidUserinfoError,
+                    .gen_delim, .unknown => return ParseError.UnexpectedCharacter, // invalid character in userinfo
                 },
             };
         }
@@ -84,7 +77,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
         out.host_type = switch (rest[0]) {
             '[' => iplit: {
                 rest = rest[1..];
-                if (rest.len == 0) return InvalidUriError.InvalidHostError; // empty IPv6/IPvFuture, trailing '['
+                if (rest.len == 0) return ParseError.InvalidFormat; // empty IPv6/IPvFuture, trailing '['
                 if (rest[0] != 'v') break :iplit .ipv6;
                 rest = rest[1..];
                 break :iplit .ipvfuture;
@@ -100,28 +93,28 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
 
                 for (rest, 0..) |c, i| switch (c) {
                     '.' => {
-                        if (i == 0) return InvalidUriError.InvalidHostError; // empty first part
-                        if (found_dot) return InvalidUriError.InvalidHostError; // too many parts
+                        if (i == 0) return ParseError.InvalidFormat; // empty first part
+                        if (found_dot) return ParseError.InvalidFormat; // too many parts
                         found_dot = true;
                     },
                     ']' => {
-                        if (!found_dot or !found_second) return InvalidUriError.InvalidHostError; // not enough parts
+                        if (!found_dot or !found_second) return ParseError.InvalidFormat; // not enough parts
                         out.host = rest[0..i];
                         rest = rest[i + 1 ..];
                         break :parser;
                     },
                     'A'...'F', 'a'...'f', '0'...'9' => found_second = found_dot,
-                    ':' => if (!found_dot) return InvalidUriError.InvalidHostError, // ':' can appear only in the second part
+                    ':' => if (!found_dot) return ParseError.InvalidFormat, // ':' can appear only in the second part
                     else => {
-                        if (!found_dot) return InvalidUriError.InvalidHostError; // characters other than HEXDIG can only appear in the second part
+                        if (!found_dot) return ParseError.InvalidFormat; // characters other than HEXDIG can only appear in the second part
                         switch (classify(c)) {
                             .unreserved, .sub_delim => {},
-                            .gen_delim, .unknown => return InvalidUriError.InvalidHostError, // invalid character in IPvFuture
+                            .gen_delim, .unknown => return ParseError.UnexpectedCharacter, // invalid character in IPvFuture
                         }
                     },
                 };
 
-                return InvalidUriError.InvalidHostError; // doesn't end in ']'
+                return ParseError.InvalidFormat; // doesn't end in ']'
             },
             .ipv6 => {
                 var left_parts: usize = 0;
@@ -134,15 +127,15 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                 var i: usize = 0;
                 l: while (i < rest.len) : (i += 1) switch (rest[i]) {
                     ']' => {
-                        if (colons == 1) return InvalidUriError.InvalidHostError; // must end with 0 or 2 colons
-                        if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
+                        if (colons == 1) return ParseError.InvalidFormat; // must end with 0 or 2 colons
+                        if (left_parts + right_parts > 7) return ParseError.InvalidFormat; // too many parts
                         out.host = rest[0..i];
                         rest = if (i < rest.len - 1) rest[i + 1 ..] else "";
                         break :parser;
                     },
                     '%' => {
-                        if (colons == 1) return InvalidUriError.InvalidHostError; // must end with 0 or 2 colons
-                        if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
+                        if (colons == 1) return ParseError.InvalidFormat; // must end with 0 or 2 colons
+                        if (left_parts + right_parts > 7) return ParseError.InvalidFormat; // too many parts
                         out.host = rest[0..i];
                         rest = rest[i..];
                         break :l;
@@ -153,11 +146,11 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                             colons += 1;
                         },
                         1 => {
-                            if (in_right) return InvalidUriError.InvalidHostError; // double colon in right part
+                            if (in_right) return ParseError.InvalidFormat; // double colon in right part
                             if (left_parts > 4) in_right = true else in_ls32 = true;
                             colons += 1;
                         },
-                        else => return InvalidUriError.InvalidHostError, // too many colons
+                        else => return ParseError.InvalidFormat, // too many colons
                     },
                     '0'...'9', 'A'...'F', 'a'...'f' => {
                         if (len == 0) {
@@ -167,23 +160,23 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                         len += 1;
                     },
                     '.' => {
-                        if (left_parts + right_parts > 7) return InvalidUriError.InvalidHostError; // too many parts
-                        i = std.mem.lastIndexOfScalar(u8, rest[0..i], ':') orelse return InvalidUriError.InvalidHostError; // l32 with dot must be after last colon
+                        if (left_parts + right_parts > 7) return ParseError.InvalidFormat; // too many parts
+                        i = std.mem.lastIndexOfScalar(u8, rest[0..i], ':') orelse return ParseError.InvalidFormat; // l32 with dot must be after last colon
                         i += try parseIpv4(rest[i + 1 ..], true);
                         out.host = rest[0..i];
                     },
-                    else => return InvalidUriError.InvalidHostError, // invalid character in IPv6
+                    else => return ParseError.InvalidFormat, // invalid character in IPv6
                 };
 
                 if (rest.len > 0 and rest[0] == '%') {
-                    if (rest.len < 4) return InvalidUriError.InvalidHostError; // must be at least 4 characters (%25 + at least 1 pct-encoded / unreserved character)
-                    if (rest[0] != '%' or rest[1] != '2' or rest[2] != '5') return InvalidUriError.InvalidHostError; // must start with %25
+                    if (rest.len < 4) return ParseError.InvalidFormat; // must be at least 4 characters (%25 + at least 1 pct-encoded / unreserved character)
+                    if (rest[0] != '%' or rest[1] != '2' or rest[2] != '5') return ParseError.InvalidFormat; // must start with %25
 
                     i = 3;
                     while (i < rest.len) : (i += 1) switch (rest[i]) {
                         'A'...'Z', 'a'...'z', '0'...'9', '.', '-', '_', '~' => {},
                         '%' => {
-                            if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidHostError; // invalid pct-encoding in zone ID
+                            try validatePctEncoding(rest[i + 1 ..]); // invalid pct-encoding in zone ID
                             i += 2;
                         },
                         ']' => {
@@ -191,11 +184,11 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                             rest = rest[i + 1 ..];
                             break :parser;
                         },
-                        else => return InvalidUriError.InvalidHostError, // invalid character in zone ID
+                        else => return ParseError.InvalidFormat, // invalid character in zone ID
                     };
                 }
 
-                return InvalidUriError.InvalidHostError; // doesn't end in ']'
+                return ParseError.InvalidFormat; // doesn't end in ']'
             },
             .ipv4 => {
                 const host_end = parseIpv4(rest, false) catch {
@@ -210,7 +203,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
 
                 while (i < rest.len) : (i += 1) switch (rest[i]) {
                     '%' => {
-                        if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidHostError; // invalid pct-encoding in reg name
+                        try validatePctEncoding(rest[i + 1 ..]); // invalid pct-encoding in reg name
                         i += 2;
                     },
                     ':', '/', '?', '#' => {
@@ -220,7 +213,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                     },
                     else => switch (classify(rest[i])) {
                         .unreserved, .sub_delim => {},
-                        .gen_delim, .unknown => return InvalidUriError.InvalidHostError, // invalidd character in reg name
+                        .gen_delim, .unknown => return ParseError.UnexpectedCharacter, // invalidd character in reg name
                     },
                 };
 
@@ -240,7 +233,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                     rest = rest[i..];
                     break :port;
                 },
-                else => return InvalidUriError.InvalidPortError, // invalid character in port
+                else => return ParseError.UnexpectedCharacter, // invalid character in port
             };
 
             rest = "";
@@ -255,7 +248,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             while (i < rest.len) : (i += 1) switch (rest[i]) {
                 ':', '/', '?', '@' => {},
                 '%' => {
-                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidQueryError; // invalid pct-encoding in query
+                    try validatePctEncoding(rest[i + 1 ..]); // invalid pct-encoding in query
                     i += 2;
                 },
                 '#' => {
@@ -265,7 +258,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                 },
                 else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim, .unknown => return InvalidUriError.InvalidQueryError, // invalid character in query
+                    .gen_delim, .unknown => return ParseError.UnexpectedCharacter, // invalid character in query
                 },
             };
 
@@ -278,12 +271,12 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
             while (i < rest.len) : (i += 1) switch (rest[i]) {
                 ':', '/', '?', '@', '#' => {},
                 '%' => {
-                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidFragmentError; // invalid pct-encoding in fragment
+                    try validatePctEncoding(rest[i + 1 ..]); // invalid pct-encoding in fragment
                     i += 2;
                 },
                 else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim, .unknown => return InvalidUriError.InvalidFragmentError, // invalid character in fragment
+                    .gen_delim, .unknown => return ParseError.UnexpectedCharacter, // invalid character in fragment
                 },
             };
 
@@ -294,11 +287,11 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
 
             var i: usize = 0;
             while (i < rest.len) : (i += 1) switch (rest[i]) {
-                ':' => if (!validated_path_noscheme) return InvalidUriError.InvalidPathError, // ':' in first path part (when in path-noscheme)
+                ':' => if (!validated_path_noscheme) return ParseError.InvalidFormat, // ':' in first path part (when in path-noscheme)
                 '@' => {},
                 '/' => validated_path_noscheme = true,
                 '%' => {
-                    if (!validatePctEncoding(rest[i + 1 ..])) return InvalidUriError.InvalidPathError; // invalid pct-encoding in path
+                    try validatePctEncoding(rest[i + 1 ..]); // invalid pct-encoding in path
                     i += 2;
                 },
                 '?', '#' => {
@@ -309,7 +302,7 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
                 },
                 else => switch (classify(rest[i])) {
                     .unreserved, .sub_delim => {},
-                    .gen_delim, .unknown => return InvalidUriError.InvalidPathError, // invalid character in path
+                    .gen_delim, .unknown => return ParseError.UnexpectedCharacter, // invalid character in path
                 },
             };
 
@@ -322,52 +315,52 @@ pub fn parse(s: []const u8) InvalidUriError!UriRef {
 
 // INTERNAL
 
-inline fn parseIpv4(s: []const u8, comptime ipv6: bool) InvalidUriError!usize {
+inline fn parseIpv4(s: []const u8, comptime ipv6: bool) ParseError!usize {
     var parts: usize = 0;
     var len: usize = 0;
 
     for (s, 0..) |c, i| switch (c) {
         '.' => {
-            if (len == 0) return InvalidUriError.InvalidHostError; // empty part
+            if (len == 0) return ParseError.InvalidFormat; // empty part
             parts += 1;
             len = 0;
         },
         ':', '/', '?', '#' => {
-            if (ipv6) return InvalidUriError.InvalidHostError; // must end with ]
-            if (len == 0) return InvalidUriError.InvalidHostError; // empty part
-            if (parts != 3) return InvalidUriError.InvalidHostError; // too many / not enough parts
+            if (ipv6) return ParseError.InvalidFormat; // must end with ]
+            if (len == 0) return ParseError.InvalidFormat; // empty part
+            if (parts != 3) return ParseError.InvalidFormat; // too many / not enough parts
             return i;
         },
         ']', '%' => {
-            if (!ipv6) return InvalidUriError.InvalidHostError; // only valid when ipv4 is a l32 of ipv6
-            if (len == 0) return InvalidUriError.InvalidHostError; // empty part
-            if (parts != 3) return InvalidUriError.InvalidHostError; // too many / not enough parts
+            if (!ipv6) return ParseError.InvalidFormat; // only valid when ipv4 is a l32 of ipv6
+            if (len == 0) return ParseError.InvalidFormat; // empty part
+            if (parts != 3) return ParseError.InvalidFormat; // too many / not enough parts
             return i;
         },
         '0'...'9' => {
-            if (len > 3) return InvalidUriError.InvalidHostError; // too long part
+            if (len > 3) return ParseError.InvalidFormat; // too long part
 
             switch (len) {
                 0 => {}, // first digit, we ignore it for now
-                1 => if (s[i - 1] == '0') return InvalidUriError.InvalidHostError, // leading zero
+                1 => if (s[i - 1] == '0') return ParseError.InvalidFormat, // leading zero
                 2 => switch (s[i - 2]) {
                     '1' => {}, // 100 - 199
                     '2' => switch (s[i - 1]) {
                         '0'...'4' => {}, // 200 - 249
-                        '5' => if (c > '5') return InvalidUriError.InvalidHostError, // 250 - 255
-                        else => return InvalidUriError.InvalidHostError, // > 255
+                        '5' => if (c > '5') return ParseError.InvalidFormat, // 250 - 255
+                        else => return ParseError.InvalidFormat, // > 255
                     },
-                    else => return InvalidUriError.InvalidHostError, // >= 300
+                    else => return ParseError.InvalidFormat, // >= 300
                 },
                 else => unreachable,
             }
 
             len += 1;
         },
-        else => return InvalidUriError.InvalidHostError,
+        else => return ParseError.InvalidFormat,
     };
 
-    if (parts != 3 or len == 0) return InvalidUriError.InvalidHostError;
+    if (parts != 3 or len == 0) return ParseError.InvalidFormat;
     return s.len;
 }
 
@@ -380,8 +373,8 @@ inline fn classify(c: u8) enum { unknown, unreserved, sub_delim, gen_delim } {
     };
 }
 
-inline fn validatePctEncoding(s: []const u8) bool {
-    return s.len >= 2 and std.ascii.isHex(s[0]) and std.ascii.isHex(s[1]);
+inline fn validatePctEncoding(s: []const u8) error{InvalidEncoding}!void {
+    if (s.len < 2 or !std.ascii.isHex(s[0]) or !std.ascii.isHex(s[1])) return ParseError.InvalidEncoding;
 }
 
 // TESTS

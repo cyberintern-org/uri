@@ -43,7 +43,7 @@ pub const UriRef = struct {
 };
 
 /// Error type for URI parsing errors.
-pub const InvalidUriError = parsing.InvalidUriError;
+pub const ParseError = parsing.ParseError;
 
 /// Parser implementation according to [RFC 3986, Chapter 3. Syntax Components](https://datatracker.ietf.org/doc/html/rfc3986#autoid-17)
 /// and [RFC 6874, Chapter 2. Specification](https://datatracker.ietf.org/doc/html/rfc6874).
