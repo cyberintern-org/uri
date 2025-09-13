@@ -31,8 +31,6 @@ pub const HostType = enum {
 };
 
 pub const UriRef = struct {
-    raw: []const u8 = "",
-
     scheme: ?[]const u8 = null,
     userinfo: ?[]const u8 = null,
     host: ?[]const u8 = null,

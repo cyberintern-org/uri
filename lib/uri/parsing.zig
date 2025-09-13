@@ -15,6 +15,7 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
 // USA
+
 const std = @import("std");
 const uri = @import("../uri.zig");
 const UriRef = uri.UriRef;
@@ -36,7 +37,7 @@ pub const InvalidUriError = error{
 pub fn parse(s: []const u8) InvalidUriError!UriRef {
     if (s.len == 0) return InvalidUriError.EmptyUriError;
 
-    var out: UriRef = .{ .raw = s };
+    var out: UriRef = .{};
     var rest = s;
 
     scheme: for (s, 0..) |c, i| switch (c) {
